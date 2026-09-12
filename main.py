@@ -10,8 +10,6 @@ TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
 CHAT_ID = "7562398807"
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-
-# معرف الرسالة الثابتة التي يتم تحديثها باستمرار
 status_message_id = None
 
 # --- سيرفر ويب مصغر لإبقاء الاستضافة المجانية نشطة ---
@@ -57,14 +55,12 @@ LEVEL_PRICES = [
 ]
 
 def update_or_send_msg(text):
-    """تقوم بتعديل نفس الرسالة السابقة بدلاً من إرسال رسائل متكررة"""
     global status_message_id
     if status_message_id is not None:
         try:
             bot.edit_message_text(chat_id=CHAT_ID, message_id=status_message_id, text=text)
             return
         except Exception:
-            # في حال تم حذف الرسالة أو حدوث خطأ يتم إرسال رسالة جديدة واعتمادها
             pass
 
     try:
@@ -74,7 +70,6 @@ def update_or_send_msg(text):
         pass
 
 def send_alert_msg(text):
-    """للإشعارات الهامة والحرجة فقط كرسائل منفصلة"""
     try:
         bot.send_message(CHAT_ID, text)
     except Exception:
@@ -103,18 +98,35 @@ def check_and_sell_basket(session):
         apiary_resp = session.get(apiary_url, headers=headers, timeout=10)
         if apiary_resp.status_code == 200:
             apiary_data = apiary_resp.json()
-            nuts_amount = apiary_data.get("fullness", 0)
-            if nuts_amount == 0 and isinstance(apiary_data.get("sellPreview"), dict):
-                nuts_amount = apiary_data["sellPreview"].get("amount", 0)
+            
+            # قراءة كمية الجوز بكل الاحتمالات المتاحة في رد السيرفر
+            nuts_amount = 0.0
+            for key in ["fullness", "amount", "current", "nuts"]:
+                val = apiary_data.get(key)
+                if val is not None:
+                    try:
+                        nuts_amount = float(val)
+                        if nuts_amount > 0:
+                            break
+                    except (ValueError, TypeError):
+                        pass
 
-            if nuts_amount >= 5000:
+            if nuts_amount == 0 and isinstance(apiary_data.get("sellPreview"), dict):
+                try:
+                    nuts_amount = float(apiary_data["sellPreview"].get("amount", 0))
+                except (ValueError, TypeError):
+                    nuts_amount = 0.0
+
+            # تنفيذ البيع عند الوصول لـ 5000 أو امتلاء السلة بنسبة 100%
+            is_full = apiary_data.get("isFull", False)
+            if nuts_amount >= 5000 or is_full:
                 sell_resp = session.post(sell_url, headers=headers, json={}, timeout=15)
                 if sell_resp.status_code == 200:
                     sell_data = sell_resp.json()
-                    sold = sell_data.get("amount", 0)
+                    sold = sell_data.get("amount", nuts_amount)
                     gained_b = sell_data.get("receiveBalanceB", 0)
                     current_b = sell_data.get("balanceB", 0)
-                    update_or_send_msg(f"🧺 تم بيع السلة!\nالمحصول: {sold:.1f} جوز\nالربح: +{gained_b:.2f}\nالرصيد: {current_b:.2f}")
+                    update_or_send_msg(f"🧺 تم بيع السلة بنجاح!\nالمحصول: {sold:.1f} جوز\nالربح: +{gained_b:.2f}\nالرصيد: {current_b:.2f}")
                     return current_b
     except Exception:
         pass
@@ -214,7 +226,7 @@ def try_buy_best_squirrel(session, balance):
             break
     return balance
 
-# --- دورة التشغيل الخلفية ---
+# --- دورة العمل الرئيسية ---
 def bot_worker():
     while not load_token():
         send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن x-telegram-init-data للبدء.")
@@ -238,7 +250,7 @@ def bot_worker():
                     balance = sold_balance
 
                 auto_merge_all(session)
-                try_buy_best_squirrel(session, balance)
+                balance = try_buy_best_squirrel(session, balance)
 
                 if seconds >= 268:
                     session.close()
@@ -262,7 +274,7 @@ def bot_worker():
         except Exception:
             time.sleep(5)
 
-# --- استقبال التوكن والأوامر من تيليجرام مباشرة ---
+# --- استقبال التوكن والأوامر من تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     bot.reply_to(message, "أهلاً بك! أرسل كود x-telegram-init-data مباشرة هنا ليتم حفظه وتشغيل اللعبة فوراً.")
