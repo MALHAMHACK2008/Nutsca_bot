@@ -6,13 +6,13 @@ import requests
 import telebot
 
 # --- إعدادات البوت وتيليجرام ---
-TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
+TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XkSGL1WDbRlkKcca124"
 CHAT_ID = "7562398807"
-
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 status_message_id = None
 
-# --- سيرفر ويب مصغر لإبقاء الاستضافة المجانية نشطة ---
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
+# --- سيرفر ويب لإبقاء الاستضافة محلياً (Web Service) ---
 server = Flask(__name__)
 
 @server.route('/')
@@ -26,22 +26,22 @@ def run_web_server():
 # --- إعدادات لعبة Nutsca ---
 TOKEN_FILE = "token.txt"
 
-tick_url = "https://base.nutsca.com/api/active-earn/tick"
-status_url = "https://base.nutsca.com/api/active-earn/status"
+tick_url = "https://base.nutsca.com/api/active/tick"
+status_url = "https://base.nutsca.com/api/game/status"
 state_url = "https://base.nutsca.com/api/game/state"
 apiary_url = "https://base.nutsca.com/api/apiary/state"
-action_url = "https://base.nutsca.com/api/game/actions"
+action_url = "https://base.nutsca.com/api/game/action"
 sell_url = "https://base.nutsca.com/api/apiary/sell"
 
 headers = {
-    "Host": "base.nutsca.com",
+    "host": "base.nutsca.com",
     "content-type": "application/json",
-    "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+    "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
     "x-telegram-init-data": "",
     "accept": "*/*",
     "origin": "https://game.nutsca.com",
     "referer": "https://game.nutsca.com/",
-    "accept-language": "ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7"
+    "accept-language": "ar-EG,ar;q=0.9,en-US;q=0.8"
 }
 
 LEVEL_PRICES = [
@@ -62,7 +62,6 @@ def update_or_send_msg(text):
             return
         except Exception:
             pass
-
     try:
         sent = bot.send_message(CHAT_ID, text)
         status_message_id = sent.message_id
@@ -88,6 +87,7 @@ def reset_and_reenter():
     new_session = requests.Session()
     try:
         new_session.get(status_url, headers=headers, timeout=10)
+        time.sleep(1)
         new_session.get(state_url, headers=headers, timeout=10)
     except Exception:
         pass
@@ -99,7 +99,6 @@ def check_and_sell_basket(session):
         if apiary_resp.status_code == 200:
             apiary_data = apiary_resp.json()
             
-            # قراءة كمية الجوز بكل الاحتمالات المتاحة في رد السيرفر
             nuts_amount = 0.0
             for key in ["fullness", "amount", "current", "nuts"]:
                 val = apiary_data.get(key)
@@ -111,22 +110,26 @@ def check_and_sell_basket(session):
                     except (ValueError, TypeError):
                         pass
 
-            if nuts_amount == 0 and isinstance(apiary_data.get("sellPreview"), dict):
-                try:
-                    nuts_amount = float(apiary_data["sellPreview"].get("amount", 0))
-                except (ValueError, TypeError):
-                    nuts_amount = 0.0
+            if nuts_amount == 0 and "data" in apiary_data and isinstance(apiary_data["data"], dict):
+                sub = apiary_data["data"]
+                for key in ["fullness", "amount", "current", "nuts"]:
+                    val = sub.get(key)
+                    if val is not None:
+                        try:
+                            nuts_amount = float(val)
+                            if nuts_amount > 0:
+                                break
+                        except (ValueError, TypeError):
+                            pass
 
-            # تنفيذ البيع عند الوصول لـ 5000 أو امتلاء السلة بنسبة 100%
             is_full = apiary_data.get("isFull", False)
+
             if nuts_amount >= 5000 or is_full:
-                sell_resp = session.post(sell_url, headers=headers, json={}, timeout=15)
+                sell_resp = session.post(sell_url, headers=headers, json={}, timeout=10)
                 if sell_resp.status_code == 200:
                     sell_data = sell_resp.json()
-                    sold = sell_data.get("amount", nuts_amount)
-                    gained_b = sell_data.get("receiveBalanceB", 0)
-                    current_b = sell_data.get("balanceB", 0)
-                    update_or_send_msg(f"🧺 تم بيع السلة بنجاح!\nالمحصول: {sold:.1f} جوز\nالربح: +{gained_b:.2f}\nالرصيد: {current_b:.2f}")
+                    current_b = sell_data.get("balanceB", "غير معروف")
+                    update_or_send_msg(f"🧺 تم بيع السلة بنجاح!\nالرصيد الحالي: {current_b}")
                     return current_b
     except Exception:
         pass
@@ -138,28 +141,28 @@ def auto_merge_all(session):
             state_resp = session.get(state_url, headers=headers, timeout=10)
             if state_resp.status_code != 200:
                 break
-                
+            
             state_data = state_resp.json()
             grid = state_data.get("grid", [])
             version = state_data.get("version", 0)
-            
+
             level_positions = {}
             for y, row in enumerate(grid):
                 for x, lvl in enumerate(row):
                     if lvl > 0:
                         if lvl not in level_positions:
                             level_positions[lvl] = []
-                        level_positions[lvl].append({"x": x, "y": y})
-            
+                        level_positions[lvl].append({"x": y, "y": x})
+
             pair_found = None
             for lvl, positions in sorted(level_positions.items()):
                 if len(positions) >= 2:
                     pair_found = (positions[0], positions[1])
                     break
-                    
+
             if not pair_found:
                 break
-                
+
             pos_from, pos_to = pair_found
             payload = {
                 "action": "MOVE",
@@ -167,8 +170,7 @@ def auto_merge_all(session):
                 "from": pos_from,
                 "to": pos_to
             }
-            
-            merge_resp = session.post(action_url, headers=headers, json=payload, timeout=15)
+            merge_resp = session.post(action_url, headers=headers, json=payload, timeout=10)
             if merge_resp.status_code == 200:
                 time.sleep(0.5)
             else:
@@ -185,19 +187,19 @@ def buy_squirrel(session, level):
         state_data = state_resp.json()
         grid = state_data.get("grid", [])
         version = state_data.get("version", 0)
-        
+
         empty_slot = None
         for y, row in enumerate(grid):
             for x, val in enumerate(row):
                 if val == 0:
-                    empty_slot = {"x": x, "y": y}
+                    empty_slot = {"x": y, "y": x}
                     break
             if empty_slot:
                 break
-                
+
         if not empty_slot:
             return None
-            
+
         payload = {
             "action": "PLACE",
             "version": version,
@@ -205,12 +207,11 @@ def buy_squirrel(session, level):
             "slotLevel": level,
             "to": empty_slot
         }
-        
-        buy_resp = session.post(action_url, headers=headers, json=payload, timeout=15)
+        buy_resp = session.post(action_url, headers=headers, json=payload, timeout=10)
         if buy_resp.status_code == 200:
             buy_data = buy_resp.json()
-            new_balance = buy_data.get("balanceB", 0)
-            update_or_send_msg(f"🛒 تم شراء سنجاب لفل {level}!\nالرصيد المتبقي: {new_balance:.2f}")
+            new_balance = buy_data.get("balanceB")
+            update_or_send_msg(f"🐿️ تم شراء سنجاب لفل {level}!\nالرصيد المتبقي: {new_balance}")
             auto_merge_all(session)
             return new_balance
     except Exception:
@@ -220,7 +221,7 @@ def buy_squirrel(session, level):
 def try_buy_best_squirrel(session, balance):
     for level, price in LEVEL_PRICES:
         if balance >= price:
-            new_bal = buy_squirrel(session, level=level)
+            new_bal = buy_squirrel(session, level)
             if new_bal is not None:
                 return new_bal
             break
@@ -228,9 +229,8 @@ def try_buy_best_squirrel(session, balance):
 
 # --- دورة العمل الرئيسية ---
 def bot_worker():
-def bot_worker():
     if not load_token():
-        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن للبدء.")
+        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن x-telegram-init-data للبدء.")
         while not load_token():
             time.sleep(20)
 
@@ -276,7 +276,7 @@ def bot_worker():
         except Exception:
             time.sleep(5)
 
-# --- استقبال التوكن والأوامر من تيليجرام ---
+# --- استقبال الأوامر والتوكن من تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     bot.reply_to(message, "أهلاً بك! أرسل كود x-telegram-init-data مباشرة هنا ليتم حفظه وتشغيل اللعبة فوراً.")
@@ -295,6 +295,8 @@ def handle_incoming_token(message):
         bot.reply_to(message, "❌ النص المرسل لا يبدو كـ init-data صالح.")
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
-    threading.Thread(target=bot_worker, daemon=True).start()
+    t_web = threading.Thread(target=run_web_server, daemon=True)
+    t_web.start()
+    t_worker = threading.Thread(target=bot_worker, daemon=True)
+    t_worker.start()
     bot.infinity_polling()
