@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import threading
 from flask import Flask
@@ -7,24 +8,24 @@ import telebot
 
 # --- إعدادات البوت وتيليجرام ---
 TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
-CHAT_ID = "7562398807"
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-status_message_id = None
 
-# --- سيرفر ويب مصغر لإبقاء الاستضافة المجانية نشطة ---
+# --- سيرفر ويب مصغر لإبقاء Render نشطاً ---
 server = Flask(__name__)
 
 @server.route('/')
 def home():
-    return "Bot is running 24/7!"
+    return "Multi-Account Nutsca Bot is running 24/7!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server.run(host="0.0.0.0", port=port)
 
-# --- إعدادات لعبة Nutsca ---
-TOKEN_FILE = "token.txt"
+# --- إعدادات اللعبة وقاعدة البيانات المحلية ---
+DATA_FILE = "users_data.json"
+active_threads = {}
+data_lock = threading.Lock()
 
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
@@ -33,11 +34,10 @@ apiary_url = "https://base.nutsca.com/api/apiary/state"
 action_url = "https://base.nutsca.com/api/game/actions"
 sell_url = "https://base.nutsca.com/api/apiary/sell"
 
-headers = {
+BASE_HEADERS = {
     "Host": "base.nutsca.com",
     "content-type": "application/json",
     "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-    "x-telegram-init-data": "",
     "accept": "*/*",
     "origin": "https://game.nutsca.com",
     "referer": "https://game.nutsca.com/",
@@ -54,52 +54,71 @@ LEVEL_PRICES = [
     (1, 100),
 ]
 
-def update_or_send_msg(text):
-    global status_message_id
-    if status_message_id is not None:
+def load_all_users():
+    with data_lock:
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
+def save_user_token(chat_id, token):
+    with data_lock:
+        users = {}
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    users = json.load(f)
+            except Exception:
+                users = {}
+        users[str(chat_id)] = {"token": token, "status_msg_id": None}
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+
+def update_user_msg_id(chat_id, msg_id):
+    with data_lock:
+        users = load_all_users()
+        if str(chat_id) in users:
+            users[str(chat_id)]["status_msg_id"] = msg_id
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(users, f, ensure_ascii=False, indent=2)
+
+def send_or_edit(chat_id, text):
+    users = load_all_users()
+    u_data = users.get(str(chat_id), {})
+    msg_id = u_data.get("status_msg_id")
+
+    if msg_id:
         try:
-            bot.edit_message_text(chat_id=CHAT_ID, message_id=status_message_id, text=text)
+            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text)
             return
         except Exception:
             pass
 
     try:
-        sent = bot.send_message(CHAT_ID, text)
-        status_message_id = sent.message_id
+        sent = bot.send_message(chat_id, text)
+        update_user_msg_id(chat_id, sent.message_id)
     except Exception:
         pass
 
-def send_alert_msg(text):
+# --- وظائف التفاعل مع سيرفر اللعبة لكل مستخدم ---
+
+def reset_and_reenter(headers):
+    session = requests.Session()
     try:
-        bot.send_message(CHAT_ID, text)
+        session.get(status_url, headers=headers, timeout=10)
+        session.get(state_url, headers=headers, timeout=10)
     except Exception:
         pass
+    return session
 
-def load_token():
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-            t = f.read().strip()
-            if t:
-                headers["x-telegram-init-data"] = t
-                return True
-    return False
-
-def reset_and_reenter():
-    new_session = requests.Session()
-    try:
-        new_session.get(status_url, headers=headers, timeout=10)
-        new_session.get(state_url, headers=headers, timeout=10)
-    except Exception:
-        pass
-    return new_session
-
-def check_and_sell_basket(session):
+def check_and_sell_basket(session, headers, chat_id):
     try:
         apiary_resp = session.get(apiary_url, headers=headers, timeout=10)
         if apiary_resp.status_code == 200:
             apiary_data = apiary_resp.json()
-            
-            # قراءة كمية الجوز بكل الاحتمالات المتاحة في رد السيرفر
             nuts_amount = 0.0
             for key in ["fullness", "amount", "current", "nuts"]:
                 val = apiary_data.get(key)
@@ -117,7 +136,6 @@ def check_and_sell_basket(session):
                 except (ValueError, TypeError):
                     nuts_amount = 0.0
 
-            # تنفيذ البيع عند الوصول لـ 5000 أو امتلاء السلة بنسبة 100%
             is_full = apiary_data.get("isFull", False)
             if nuts_amount >= 5000 or is_full:
                 sell_resp = session.post(sell_url, headers=headers, json={}, timeout=15)
@@ -126,13 +144,13 @@ def check_and_sell_basket(session):
                     sold = sell_data.get("amount", nuts_amount)
                     gained_b = sell_data.get("receiveBalanceB", 0)
                     current_b = sell_data.get("balanceB", 0)
-                    update_or_send_msg(f"🧺 تم بيع السلة بنجاح!\nالمحصول: {sold:.1f} جوز\nالربح: +{gained_b:.2f}\nالرصيد: {current_b:.2f}")
+                    send_or_edit(chat_id, f"🧺 تم بيع السلة بنجاح!\nالمحصول: {sold:.1f} جوز\nالربح: +{gained_b:.2f}\nالرصيد: {current_b:.2f}")
                     return current_b
     except Exception:
         pass
     return None
 
-def auto_merge_all(session):
+def auto_merge_all(session, headers):
     while True:
         try:
             state_resp = session.get(state_url, headers=headers, timeout=10)
@@ -176,7 +194,7 @@ def auto_merge_all(session):
         except Exception:
             break
 
-def buy_squirrel(session, level):
+def buy_squirrel(session, headers, level, chat_id):
     try:
         state_resp = session.get(state_url, headers=headers, timeout=10)
         if state_resp.status_code != 200:
@@ -210,91 +228,139 @@ def buy_squirrel(session, level):
         if buy_resp.status_code == 200:
             buy_data = buy_resp.json()
             new_balance = buy_data.get("balanceB", 0)
-            update_or_send_msg(f"🛒 تم شراء سنجاب لفل {level}!\nالرصيد المتبقي: {new_balance:.2f}")
-            auto_merge_all(session)
+            send_or_edit(chat_id, f"🛒 تم شراء سنجاب لفل {level}!\nالرصيد المتبقي: {new_balance:.2f}")
+            auto_merge_all(session, headers)
             return new_balance
     except Exception:
         pass
     return None
 
-def try_buy_best_squirrel(session, balance):
+def try_buy_best_squirrel(session, headers, balance, chat_id):
     for level, price in LEVEL_PRICES:
         if balance >= price:
-            new_bal = buy_squirrel(session, level=level)
+            new_bal = buy_squirrel(session, headers, level, chat_id)
             if new_bal is not None:
                 return new_bal
             break
     return balance
 
-# --- دورة العمل الرئيسية ---
-def bot_worker():
-    # إرسال رسالة التنبيه مرة واحدة فقط إذا لم يتوفر التوكن
-    if not load_token():
-        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن  للبدء.")
-        while not load_token():
-            time.sleep(10)
-
-    session = reset_and_reenter()
-    auto_merge_all(session)
-    update_or_send_msg("✅ تم تشغيل السكربت بنجاح والاتصال باللعبة!")
+# --- مسار عمل مخصص لكل مستخدم على حدة ---
+def user_bot_worker(chat_id):
+    headers = BASE_HEADERS.copy()
 
     while True:
-        try:
-            response = session.post(tick_url, headers=headers, json={}, timeout=15)
-            if response.status_code == 200:
-                data = response.json()
-                seconds = data.get("sessionSeconds", 0)
-                balance = data.get("balanceB", 0)
-                interval = data.get("tickIntervalSeconds", 10)
+        users = load_all_users()
+        user_info = users.get(str(chat_id))
+        token = user_info.get("token") if user_info else None
 
-                sold_balance = check_and_sell_basket(session)
-                if sold_balance is not None:
-                    balance = sold_balance
-
-                auto_merge_all(session)
-                balance = try_buy_best_squirrel(session, balance)
-
-                if seconds >= 268:
-                    session.close()
-                    time.sleep(60)
-                    session = reset_and_reenter()
-                    auto_merge_all(session)
-                    check_and_sell_basket(session)
-                    continue
-
-                time.sleep(interval)
-
-            elif response.status_code in [400, 401]:
-                session.close()
-                send_alert_msg("🚨 انتهت صلاحية التوكن! أرسل التوكن الجديد هنا مباشرة في الشات لتحديثه.")
-                while not load_token():
-                    time.sleep(10)
-                session = reset_and_reenter()
-            else:
+        if not token:
+            try:
+                bot.send_message(chat_id, "⚠️ أرسل التوكن الخاص بحسابك (init-data) للبدء.")
+            except Exception:
+                pass
+            while True:
                 time.sleep(10)
+                users = load_all_users()
+                user_info = users.get(str(chat_id))
+                token = user_info.get("token") if user_info else None
+                if token:
+                    break
 
-        except Exception:
-            time.sleep(5)
+        headers["x-telegram-init-data"] = token
+        session = reset_and_reenter(headers)
+        auto_merge_all(session, headers)
+        send_or_edit(chat_id, "✅ تم تشغيل السكربت بنجاح والاتصال بحسابك!")
 
-# --- استقبال التوكن والأوامر من تيليجرام ---
+        while True:
+            # التحقق إن كان المستخدم حدث التوكن أثناء العمل
+            current_users = load_all_users()
+            latest_token = current_users.get(str(chat_id), {}).get("token")
+            if latest_token != token:
+                token = latest_token
+                headers["x-telegram-init-data"] = token
+                session = reset_and_reenter(headers)
+
+            try:
+                response = session.post(tick_url, headers=headers, json={}, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    seconds = data.get("sessionSeconds", 0)
+                    balance = data.get("balanceB", 0)
+                    interval = data.get("tickIntervalSeconds", 10)
+
+                    sold_balance = check_and_sell_basket(session, headers, chat_id)
+                    if sold_balance is not None:
+                        balance = sold_balance
+
+                    auto_merge_all(session, headers)
+                    balance = try_buy_best_squirrel(session, headers, balance, chat_id)
+
+                    if seconds >= 268:
+                        session.close()
+                        time.sleep(60)
+                        session = reset_and_reenter(headers)
+                        auto_merge_all(session, headers)
+                        check_and_sell_basket(session, headers, chat_id)
+                        continue
+
+                    time.sleep(interval)
+
+                elif response.status_code in [400, 401]:
+                    session.close()
+                    try:
+                        bot.send_message(chat_id, "🚨 انتهت صلاحية التوكن الخاص بك! أرسل التوكن الجديد هنا.")
+                    except Exception:
+                        pass
+                    
+                    old_tok = token
+                    while True:
+                        time.sleep(10)
+                        chk_users = load_all_users()
+                        chk_token = chk_users.get(str(chat_id), {}).get("token")
+                        if chk_token and chk_token != old_tok:
+                            token = chk_token
+                            headers["x-telegram-init-data"] = token
+                            break
+                    session = reset_and_reenter(headers)
+                else:
+                    time.sleep(10)
+
+            except Exception:
+                time.sleep(5)
+
+def start_worker_for_user(chat_id):
+    cid = str(chat_id)
+    if cid not in active_threads or not active_threads[cid].is_alive():
+        t = threading.Thread(target=user_bot_worker, args=(chat_id,), daemon=True)
+        active_threads[cid] = t
+        t.start()
+
+# --- استقبال رسائل تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    bot.reply_to(message, "أهلاً بك! أرسل كود مباشرة هنا ليتم حفظه وتشغيل اللعبة فوراً.")
+    chat_id = message.chat.id
+    bot.reply_to(message, "أهلاً بك في بوت Nutsca!\nأرسل كود x-telegram-init-data الخاص بك هنا للبدء فوراً.")
+    start_worker_for_user(chat_id)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_incoming_token(message):
+    chat_id = message.chat.id
     text = message.text.strip()
     if "user=" in text or "hash=" in text:
         if "&tgWebApp" in text:
             text = text.split("&tgWebApp")[0]
-        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-            f.write(text)
-        headers["x-telegram-init-data"] = text
-        bot.reply_to(message, "✅ تم استلام التوكن وتحديثه بنجاح! جاري استئناف العمل...")
+        save_user_token(chat_id, text)
+        bot.reply_to(message, "✅ تم حفظ التوكن لحسابك بنجاح! جاري تشغيل اللعبة...")
+        start_worker_for_user(chat_id)
     else:
-        bot.reply_to(message, "❌ النص المرسل لا يبدو كـ  صالح.")
+        bot.reply_to(message, "❌ النص المرسل غير صحيح. تأكد من نسخ رابط أو توكن init-data بشكل سليم.")
 
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
-    threading.Thread(target=bot_worker, daemon=True).start()
+    
+    # إعادة تشغيل الحسابات المخزنة مسبقاً تلقائياً
+    saved_users = load_all_users()
+    for uid in saved_users:
+        start_worker_for_user(int(uid))
+        
     bot.infinity_polling()
