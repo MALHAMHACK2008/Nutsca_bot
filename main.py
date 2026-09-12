@@ -6,11 +6,13 @@ import requests
 import telebot
 
 # --- إعدادات البوت وتيليجرام ---
-# ضع التوكن الخاص ببوتك من BotFather والـ Chat ID الخاص بحسابك
 TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
 CHAT_ID = "7562398807"
 
-bot = telebot.TeleBot('8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8')
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+
+# معرف الرسالة الثابتة التي يتم تحديثها باستمرار
+status_message_id = None
 
 # --- سيرفر ويب مصغر لإبقاء الاستضافة المجانية نشطة ---
 server = Flask(__name__)
@@ -54,7 +56,25 @@ LEVEL_PRICES = [
     (1, 100),
 ]
 
-def send_tg_msg(text):
+def update_or_send_msg(text):
+    """تقوم بتعديل نفس الرسالة السابقة بدلاً من إرسال رسائل متكررة"""
+    global status_message_id
+    if status_message_id is not None:
+        try:
+            bot.edit_message_text(chat_id=CHAT_ID, message_id=status_message_id, text=text)
+            return
+        except Exception:
+            # في حال تم حذف الرسالة أو حدوث خطأ يتم إرسال رسالة جديدة واعتمادها
+            pass
+
+    try:
+        sent = bot.send_message(CHAT_ID, text)
+        status_message_id = sent.message_id
+    except Exception:
+        pass
+
+def send_alert_msg(text):
+    """للإشعارات الهامة والحرجة فقط كرسائل منفصلة"""
     try:
         bot.send_message(CHAT_ID, text)
     except Exception:
@@ -94,7 +114,7 @@ def check_and_sell_basket(session):
                     sold = sell_data.get("amount", 0)
                     gained_b = sell_data.get("receiveBalanceB", 0)
                     current_b = sell_data.get("balanceB", 0)
-                    send_tg_msg(f"🧺 تم بيع السلة!\nالمحصول: {sold:.1f} جوز\nالربح: +{gained_b:.2f}\nالرصيد: {current_b:.2f}")
+                    update_or_send_msg(f"🧺 تم بيع السلة!\nالمحصول: {sold:.1f} جوز\nالربح: +{gained_b:.2f}\nالرصيد: {current_b:.2f}")
                     return current_b
     except Exception:
         pass
@@ -120,11 +140,9 @@ def auto_merge_all(session):
                         level_positions[lvl].append({"x": x, "y": y})
             
             pair_found = None
-            merge_level = None
             for lvl, positions in sorted(level_positions.items()):
                 if len(positions) >= 2:
                     pair_found = (positions[0], positions[1])
-                    merge_level = lvl
                     break
                     
             if not pair_found:
@@ -180,7 +198,7 @@ def buy_squirrel(session, level):
         if buy_resp.status_code == 200:
             buy_data = buy_resp.json()
             new_balance = buy_data.get("balanceB", 0)
-            send_tg_msg(f"🛒 تم شراء سنجاب لفل {level}!\nالرصيد المتبقي: {new_balance:.2f}")
+            update_or_send_msg(f"🛒 تم شراء سنجاب لفل {level}!\nالرصيد المتبقي: {new_balance:.2f}")
             auto_merge_all(session)
             return new_balance
     except Exception:
@@ -199,12 +217,12 @@ def try_buy_best_squirrel(session, balance):
 # --- دورة التشغيل الخلفية ---
 def bot_worker():
     while not load_token():
-        send_tg_msg("⚠️ السكربت بانتظار إرسال التوكن x-telegram-init-data للبدء.")
+        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن x-telegram-init-data للبدء.")
         time.sleep(20)
 
     session = reset_and_reenter()
     auto_merge_all(session)
-    send_tg_msg("✅ تم تشغيل السكربت بنجاح والاتصال باللعبة!")
+    update_or_send_msg("✅ تم تشغيل السكربت بنجاح والاتصال باللعبة!")
 
     while True:
         try:
@@ -234,7 +252,7 @@ def bot_worker():
 
             elif response.status_code in [400, 401]:
                 session.close()
-                send_tg_msg("🚨 انتهت صلاحية التوكن! أرسل التوكن الجديد هنا مباشرة في الشات لتحديثه.")
+                send_alert_msg("🚨 انتهت صلاحية التوكن! أرسل التوكن الجديد هنا مباشرة في الشات لتحديثه.")
                 while not load_token():
                     time.sleep(10)
                 session = reset_and_reenter()
@@ -263,11 +281,6 @@ def handle_incoming_token(message):
         bot.reply_to(message, "❌ النص المرسل لا يبدو كـ init-data صالح.")
 
 if __name__ == "__main__":
-    # 1. تشغيل سيرفر الويب في خلفية منفصلة
     threading.Thread(target=run_web_server, daemon=True).start()
-    
-    # 2. تشغيل عامل اللعبة في خلفية منفصلة
     threading.Thread(target=bot_worker, daemon=True).start()
-    
-    # 3. تشغيل استماع رسائل بوت التيليجرام
     bot.infinity_polling()
