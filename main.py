@@ -228,9 +228,11 @@ def try_buy_best_squirrel(session, balance):
 
 # --- دورة العمل الرئيسية ---
 def bot_worker():
-    while not load_token():
-        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن x-telegram-init-data للبدء.")
-        time.sleep(20)
+def bot_worker():
+    if not load_token():
+        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن للبدء.")
+        while not load_token():
+            time.sleep(20)
 
     session = reset_and_reenter()
     auto_merge_all(session)
