@@ -6,8 +6,7 @@ import requests
 import telebot
 
 # --- إعدادات البوت وتيليجرام ---
-TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XkSGL1WDbRlkKcca124"
-CHAT_ID = "7562398807"
+TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
 status_message_id = None
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
