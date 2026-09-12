@@ -7,8 +7,8 @@ import telebot
 
 # --- إعدادات البوت وتيليجرام ---
 # ضع التوكن الخاص ببوتك من BotFather والـ Chat ID الخاص بحسابك
-TELEGRAM_BOT_TOKEN = "ضع_توكن_بوت_تيليجرام_هنا"
-CHAT_ID = "ضع_معرف_الشات_تبعك_هنا"
+TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
+CHAT_ID = "7562398807"
 
 bot = telebot.TeleBot('8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8')
 
