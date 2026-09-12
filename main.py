@@ -10,7 +10,7 @@ import telebot
 TELEGRAM_BOT_TOKEN = "ضع_توكن_بوت_تيليجرام_هنا"
 CHAT_ID = "ضع_معرف_الشات_تبعك_هنا"
 
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+bot = telebot.TeleBot(8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8)
 
 # --- سيرفر ويب مصغر لإبقاء الاستضافة المجانية نشطة ---
 server = Flask(__name__)
