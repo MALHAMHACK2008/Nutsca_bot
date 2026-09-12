@@ -229,7 +229,7 @@ def try_buy_best_squirrel(session, balance):
 # --- دورة العمل الرئيسية ---
 def bot_worker():
     if not load_token():
-        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن x-telegram-init-data للبدء.")
+        send_alert_msg("⚠️ السكربت بانتظار إرسال التوكن  للبدء.")
         while not load_token():
             time.sleep(20)
 
@@ -278,7 +278,7 @@ def bot_worker():
 # --- استقبال الأوامر والتوكن من تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    bot.reply_to(message, "أهلاً بك! أرسل كود x-telegram-init-data مباشرة هنا ليتم حفظه وتشغيل اللعبة فوراً.")
+    bot.reply_to(message, "أهلاً بك! أرسل كود  مباشرة هنا ليتم حفظه وتشغيل اللعبة فوراً.")
 
 @bot.message_handler(func=lambda msg: True)
 def handle_incoming_token(message):
@@ -291,7 +291,7 @@ def handle_incoming_token(message):
         headers["x-telegram-init-data"] = text
         bot.reply_to(message, "✅ تم استلام التوكن وتحديثه بنجاح! جاري استئناف العمل...")
     else:
-        bot.reply_to(message, "❌ النص المرسل لا يبدو كـ init-data صالح.")
+        bot.reply_to(message, "❌ النص المرسل لا يبدو كـ  صالح.")
 
 if __name__ == "__main__":
     t_web = threading.Thread(target=run_web_server, daemon=True)
