@@ -103,7 +103,7 @@ def send_or_edit(chat_id, text):
     except Exception:
         pass
 
-# --- وظائف التفاعل مع سيرفر اللعبة لكل مستخدم ---
+# --- وظائف التفاعل مع سيرفر اللعبة ---
 
 def reset_and_reenter(headers):
     session = requests.Session()
@@ -167,7 +167,7 @@ def auto_merge_all(session, headers):
                     if lvl > 0:
                         if lvl not in level_positions:
                             level_positions[lvl] = []
-                        level_positions[lvl].append({"x": x, "y": y})
+                        level_positions[lvl].append({"x": y, "y": x})
             
             pair_found = None
             for lvl, positions in sorted(level_positions.items()):
@@ -246,87 +246,83 @@ def try_buy_best_squirrel(session, headers, balance, chat_id):
 
 # --- مسار عمل مخصص لكل مستخدم على حدة ---
 def user_bot_worker(chat_id):
+    cid = str(chat_id)
     headers = BASE_HEADERS.copy()
 
-    while True:
+    users = load_all_users()
+    token = users.get(cid, {}).get("token")
+
+    if not token:
+        try:
+            bot.send_message(chat_id, "⚠️ أرسل التوكن الخاص بحسابك (init-data) للبدء.")
+        except Exception:
+            pass
+
+    while not token:
+        time.sleep(3)
         users = load_all_users()
-        user_info = users.get(str(chat_id))
-        token = user_info.get("token") if user_info else None
+        token = users.get(cid, {}).get("token")
 
-        if not token:
-            try:
-                bot.send_message(chat_id, "⚠️ أرسل التوكن الخاص بحسابك (init-data) للبدء.")
-            except Exception:
-                pass
-            while True:
-                time.sleep(10)
-                users = load_all_users()
-                user_info = users.get(str(chat_id))
-                token = user_info.get("token") if user_info else None
-                if token:
-                    break
+    headers["x-telegram-init-data"] = token
+    session = reset_and_reenter(headers)
+    auto_merge_all(session, headers)
+    send_or_edit(chat_id, "✅ تم تشغيل السكربت بنجاح والاتصال بحسابك!")
 
-        headers["x-telegram-init-data"] = token
-        session = reset_and_reenter(headers)
-        auto_merge_all(session, headers)
-        send_or_edit(chat_id, "✅ تم تشغيل السكربت بنجاح والاتصال بحسابك!")
+    while True:
+        current_users = load_all_users()
+        latest_token = current_users.get(cid, {}).get("token")
+        if latest_token and latest_token != token:
+            token = latest_token
+            headers["x-telegram-init-data"] = token
+            session = reset_and_reenter(headers)
+            send_or_edit(chat_id, "🔄 تم تطبيق التوكن الجديد والاتصال مجدداً!")
 
-        while True:
-            # التحقق إن كان المستخدم حدث التوكن أثناء العمل
-            current_users = load_all_users()
-            latest_token = current_users.get(str(chat_id), {}).get("token")
-            if latest_token != token:
-                token = latest_token
-                headers["x-telegram-init-data"] = token
-                session = reset_and_reenter(headers)
+        try:
+            response = session.post(tick_url, headers=headers, json={}, timeout=15)
 
-            try:
-                response = session.post(tick_url, headers=headers, json={}, timeout=15)
-                if response.status_code == 200:
-                    data = response.json()
-                    seconds = data.get("sessionSeconds", 0)
-                    balance = data.get("balanceB", 0)
-                    interval = data.get("tickIntervalSeconds", 10)
+            if response.status_code == 200:
+                data = response.json()
+                seconds = data.get("sessionSeconds", 0)
+                balance = data.get("balanceB", 0)
+                interval = data.get("tickIntervalSeconds", 10)
 
-                    sold_balance = check_and_sell_basket(session, headers, chat_id)
-                    if sold_balance is not None:
-                        balance = sold_balance
+                sold_balance = check_and_sell_basket(session, headers, chat_id)
+                if sold_balance is not None:
+                    balance = sold_balance
 
-                    auto_merge_all(session, headers)
-                    balance = try_buy_best_squirrel(session, headers, balance, chat_id)
+                auto_merge_all(session, headers)
+                balance = try_buy_best_squirrel(session, headers, balance, chat_id)
 
-                    if seconds >= 268:
-                        session.close()
-                        time.sleep(60)
-                        session = reset_and_reenter(headers)
-                        auto_merge_all(session, headers)
-                        check_and_sell_basket(session, headers, chat_id)
-                        continue
-
-                    time.sleep(interval)
-
-                elif response.status_code in [400, 401]:
+                if seconds >= 268:
                     session.close()
-                    try:
-                        bot.send_message(chat_id, "🚨 انتهت صلاحية التوكن الخاص بك! أرسل التوكن الجديد هنا.")
-                    except Exception:
-                        pass
-                    
-                    old_tok = token
-                    while True:
-                        time.sleep(10)
-                        chk_users = load_all_users()
-                        chk_token = chk_users.get(str(chat_id), {}).get("token")
-                        if chk_token and chk_token != old_tok:
-                            token = chk_token
-                            headers["x-telegram-init-data"] = token
-                            break
+                    time.sleep(60)
                     session = reset_and_reenter(headers)
-                else:
-                    time.sleep(10)
+                    auto_merge_all(session, headers)
+                    check_and_sell_basket(session, headers, chat_id)
+                    continue
 
-            except Exception:
-                time.sleep(5)
+                time.sleep(interval)
+
+            elif response.status_code in [400, 401]:
+                session.close()
+                send_or_edit(chat_id, "🚨 التوكن غير صالح أو منتهي الصلاحية! يرجى إرسال توكن جديد وحديث.")
+                
+                old_tok = token
+                while True:
+                    time.sleep(5)
+                    chk_users = load_all_users()
+                    chk_token = chk_users.get(cid, {}).get("token")
+                    if chk_token and chk_token != old_tok:
+                        token = chk_token
+                        headers["x-telegram-init-data"] = token
+                        session = reset_and_reenter(headers)
+                        send_or_edit(chat_id, "✅ جاري استئناف العمل بالتوكن الجديد...")
+                        break
+            else:
+                time.sleep(10)
+
+        except Exception:
+            time.sleep(5)
 
 def start_worker_for_user(chat_id):
     cid = str(chat_id)
@@ -350,10 +346,10 @@ def handle_incoming_token(message):
         if "&tgWebApp" in text:
             text = text.split("&tgWebApp")[0]
         save_user_token(chat_id, text)
-        bot.reply_to(message, "✅ تم حفظ التوكن لحسابك بنجاح! جاري تشغيل اللعبة...")
+        bot.reply_to(message, "✅ تم استلام التوكن وحفظه! جاري بدء تشغيل السكربت...")
         start_worker_for_user(chat_id)
     else:
-        bot.reply_to(message, "❌ النص المرسل غير صحيح. تأكد من نسخ رابط أو توكن init-data بشكل سليم.")
+        bot.reply_to(message, "❌ النص المرسل غير صحيح. تأكد من إرسال السطر الكامل الذي يبدأ بـ user= أو يحتوي على hash=.")
 
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
