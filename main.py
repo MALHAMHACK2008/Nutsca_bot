@@ -254,7 +254,7 @@ def bot_worker():
                 auto_merge_all(session)
                 balance = try_buy_best_squirrel(session, balance)
 
-                if seconds >= 268:
+                if seconds >= 265:
                     session.close()
                     time.sleep(60)
                     session = reset_and_reenter()
