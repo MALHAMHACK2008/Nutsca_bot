@@ -4,26 +4,27 @@ import threading
 from flask import Flask
 import requests
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# --- إعدادات البوت ---
 TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
-
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 user_status_messages = {}
 active_threads = {}
-user_states = {}
+user_stats = {}
 
+# --- سيرفر ويب مصغر لإبقاء الاستضافة نشطة 24/7 ---
 server = Flask(__name__)
 
 @server.route('/')
 def home():
-    return "Bot Dashboard Pro is running 24/7!"
+    return "Nutsca Pro Bot is Running 24/7!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server.run(host="0.0.0.0", port=port)
 
+# --- إعدادات وروابط اللعبة ---
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -54,6 +55,18 @@ LEVEL_PRICES = [
 def get_token_filename(chat_id):
     return f"token_{chat_id}.txt"
 
+def load_user_token(chat_id):
+    filename = get_token_filename(chat_id)
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+                if t:
+                    return t
+        except Exception:
+            pass
+    return None
+
 def make_progress_bar(percent, total_blocks=10):
     filled = int(round(total_blocks * (percent / 100.0)))
     filled = max(0, min(total_blocks, filled))
@@ -66,51 +79,38 @@ def format_uptime(seconds):
         return f"{hours} س و {mins} د"
     return f"{mins} د و {sec} ث"
 
-def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, basket_percent, uptime_sec, extra_status="شغال بنشاط ⚡"):
+def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, basket_percent, uptime_sec, status_text="تجميع النقاط جاري... ⚡"):
     hours_run = max(uptime_sec / 3600.0, 0.001)
     rate_per_hour = total_profit / hours_run
     bar = make_progress_bar(basket_percent)
 
     return (
         "╔══════════════════════╗\n"
-        "       🌰 لوحة تحكم NUTSCA PRO 🌰       \n"
+        "       🐿️ لوحة تحكم NUTSCA PRO 🐿️       \n"
         "╚══════════════════════╝\n\n"
         f"💰 الرصيد الحالي: {balance:.2f} B\n"
         f"📈 إجمالي الأرباح: +{total_profit:.2f} B\n"
-        f"⚡ السرعة: ~{rate_per_hour:.2f} B / ساعة\n"
-        f"🐿️ أعلى سنجاب: لفل {highest_level}\n\n"
+        f"⚡ السرعة التقديرية: ~{rate_per_hour:.2f} B / ساعة\n"
+        f"👑 أعلى سنجاب: لفل {highest_level}\n\n"
         f"🧺 حمولة السلة: {basket_nuts:.1f} / 5000\n"
         f"[{bar}] {basket_percent:.1f}%\n\n"
         f"⏱️ مدة التشغيل: {format_uptime(uptime_sec)}\n"
-        f"📊 الحالة: {extra_status}\n"
+        f"📊 الحالة: {status_text}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔄 التحديث: يتم تعديل هذه اللوحة تلقائياً"
+        "🔄 التحديث: يتم تعديل هذه الرسالة تلقائياً"
     )
-
-def get_dashboard_keyboard(chat_id):
-    is_paused = user_states.get(chat_id, {}).get("paused", False)
-    pause_label = "▶️ استئناف" if is_paused else "⏸️ إيقاف مؤقت"
-    
-    markup = InlineKeyboardMarkup(row_width=2)
-    b_refresh = InlineKeyboardButton("🔄 تحديث فوري", callback_data=f"refresh_{chat_id}")
-    b_sell = InlineKeyboardButton("🧺 بيع إجباري", callback_data=f"sell_{chat_id}")
-    b_pause = InlineKeyboardButton(pause_label, callback_data=f"pause_{chat_id}")
-    markup.add(b_refresh, b_sell)
-    markup.add(b_pause)
-    return markup
 
 def update_or_send_msg(chat_id, text):
     msg_id = user_status_messages.get(chat_id)
-    kb = get_dashboard_keyboard(chat_id)
     if msg_id:
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, reply_markup=kb)
+            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text)
             return
         except Exception:
             pass
 
     try:
-        sent = bot.send_message(chat_id, text, reply_markup=kb)
+        sent = bot.send_message(chat_id, text)
         user_status_messages[chat_id] = sent.message_id
     except Exception:
         pass
@@ -120,18 +120,6 @@ def send_alert_msg(chat_id, text):
         bot.send_message(chat_id, text)
     except Exception:
         pass
-
-def load_user_token(chat_id):
-    filename = get_token_filename(chat_id)
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f:
-                t = f.read().strip()
-                if t:
-                    return t
-        except Exception:
-            pass
-    return None
 
 def reset_and_reenter(headers):
     new_session = requests.Session()
@@ -292,18 +280,16 @@ def try_buy_best_squirrel(session, headers, balance):
             break
     return balance, latest_grid, bought_level
 
+# --- مسار عمل كل مستخدم ---
 def bot_worker_for_user(chat_id):
     headers = DEFAULT_HEADERS.copy()
-    
-    if chat_id not in user_states:
-        user_states[chat_id] = {"paused": False, "force_sell": False, "start_time": time.time(), "force_refresh": False}
+    current_token = load_user_token(chat_id)
 
-    token = load_user_token(chat_id)
-    while not token:
-        time.sleep(3)
-        token = load_user_token(chat_id)
+    while not current_token:
+        time.sleep(4)
+        current_token = load_user_token(chat_id)
 
-    headers["x-telegram-init-data"] = token
+    headers["x-telegram-init-data"] = current_token
     session = reset_and_reenter(headers)
     grid = auto_merge_all(session, headers)
     
@@ -312,28 +298,21 @@ def bot_worker_for_user(chat_id):
     
     total_profit = 0.0
     last_balance = None
-    user_states[chat_id]["start_time"] = time.time()
+    start_time = time.time()
 
-    update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم الاتصال بنجاح! 🚀"))
+    update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم الاتصال بالخادم بنجاح! 🚀"))
 
     while True:
-        # قراءة التوكن باستمرار في حال تم تحديثه
         fresh_token = load_user_token(chat_id)
-        if fresh_token and fresh_token != token:
-            token = fresh_token
-            headers["x-telegram-init-data"] = token
+        if fresh_token and fresh_token != current_token:
+            current_token = fresh_token
+            headers["x-telegram-init-data"] = current_token
             session.close()
             session = reset_and_reenter(headers)
             grid = auto_merge_all(session, headers)
 
-        if user_states[chat_id].get("paused", False):
-            uptime_sec = time.time() - user_states[chat_id]["start_time"]
-            update_or_send_msg(chat_id, build_dashboard_text(last_balance or 0.0, total_profit, highest_lvl, nuts, percent, uptime_sec, "⏸️ متوقف مؤقتاً (يمكنك اللعب من الهاتف)"))
-            time.sleep(4)
-            continue
-
         try:
-            uptime_sec = time.time() - user_states[chat_id]["start_time"]
+            uptime_sec = time.time() - start_time
             response = session.post(tick_url, headers=headers, json={}, timeout=15)
 
             if response.status_code == 200:
@@ -349,16 +328,14 @@ def bot_worker_for_user(chat_id):
                 nuts, percent, is_full = get_basket_info(session, headers)
                 status_text = "تجميع النقاط جاري... ⚡"
 
-                should_sell = nuts >= 5000 or is_full or user_states[chat_id].get("force_sell", False)
-                if should_sell:
-                    user_states[chat_id]["force_sell"] = False
+                if nuts >= 5000 or is_full:
                     sold_bal, earned_from_b, was_sold = execute_sell(session, headers)
                     if was_sold and sold_bal is not None:
                         total_profit += earned_from_b
                         current_balance = sold_bal
                         last_balance = current_balance
                         nuts, percent = 0.0, 0.0
-                        status_text = f"تم تفريغ وبيع السلة بنجاح (+{earned_from_b:.2f} B)! 🧺✨"
+                        status_text = f"تم تفريغ وبيع السلة (+{earned_from_b:.2f} B)! 🧺✨"
 
                 merged_grid = auto_merge_all(session, headers)
                 if merged_grid:
@@ -368,7 +345,7 @@ def bot_worker_for_user(chat_id):
                 if buy_grid:
                     grid = buy_grid
                 if bought_lvl:
-                    status_text = f"تم شراء سنجاب لفل {bought_lvl}! 🐿️"
+                    status_text = f"تم شراء سنجاب لفل {bought_lvl} ودمجه! 🐿️"
                     current_balance = new_balance
                     last_balance = current_balance
 
@@ -382,14 +359,7 @@ def bot_worker_for_user(chat_id):
                     grid = auto_merge_all(session, headers)
                     continue
 
-                # تقسيم مدة الانتظار للتحقق الفوري من أوامر الأزرار
-                sleep_count = 0
-                while sleep_count < interval:
-                    if user_states[chat_id].get("force_sell") or user_states[chat_id].get("paused") or user_states[chat_id].get("force_refresh"):
-                        user_states[chat_id]["force_refresh"] = False
-                        break
-                    time.sleep(1)
-                    sleep_count += 1
+                time.sleep(interval)
 
             elif response.status_code in [400, 401]:
                 session.close()
@@ -397,17 +367,18 @@ def bot_worker_for_user(chat_id):
                     "╔══════════════════════╗\n"
                     "   🚨  انتهت صلاحية الجلسة  🚨\n"
                     "╚══════════════════════╝\n\n"
-                    "⌛ انتهت صلاحية التوكن الحالي أو تم تسجيل الدخول من جهاز آخر.\n"
-                    "🔑 يرجى نسخ التوكن الجديد وإرساله هنا فوراً لاستئناف التجميع دون انقطاع!"
+                    "⌛ انتهت صلاحية التوكن الحالي أو تم فتح اللعبة من جهاز آخر.\n"
+                    "🔑 يرجى نسخ التوكن الجديد وإرساله هنا فوراً لاستئناف التجميع دون توقف!"
                 )
                 send_alert_msg(chat_id, token_expired_msg)
-                old_token = token
+                
+                old_token = current_token
                 while True:
                     time.sleep(4)
                     new_token = load_user_token(chat_id)
                     if new_token and new_token != old_token:
-                        token = new_token
-                        headers["x-telegram-init-data"] = token
+                        current_token = new_token
+                        headers["x-telegram-init-data"] = current_token
                         session = reset_and_reenter(headers)
                         break
             else:
@@ -422,70 +393,48 @@ def start_user_thread(chat_id):
         active_threads[chat_id] = t
         t.start()
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-    data = call.data
-    chat_id = call.message.chat.id
-
-    if chat_id not in user_states:
-        user_states[chat_id] = {"paused": False, "force_sell": False, "start_time": time.time(), "force_refresh": False}
-
-    if data.startswith("refresh_"):
-        user_states[chat_id]["force_refresh"] = True
-        bot.answer_callback_query(call.id, "🔄 جاري التحديث الفوري...")
-    elif data.startswith("sell_"):
-        user_states[chat_id]["force_sell"] = True
-        bot.answer_callback_query(call.id, "🧺 تم إرسال أمر البيع الإجباري فوراً!")
-    elif data.startswith("pause_"):
-        user_states[chat_id]["paused"] = not user_states[chat_id]["paused"]
-        state_text = "تم إيقاف البوت مؤقتاً ⏸️" if user_states[chat_id]["paused"] else "تم استئناف العمل ▶️"
-        bot.answer_callback_query(call.id, state_text)
-
+# --- معالجة رسائل تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
-    token = load_user_token(chat_id)
-    
-    # تفريغ معرف الرسالة القديمة لتوليد لوحة جديدة نظيفة
     user_status_messages[chat_id] = None
     
     welcome_msg = (
         "╔══════════════════════╗\n"
         "       🐿️ مرحباً بك في بوت NUTSCA 🐿️       \n"
         "╚══════════════════════╝\n\n"
-        "✨ نظام التجميع التلقائي الذكي يعمل على مدار الساعة:\n\n"
+        "✨ نظام التجميع الذكي يعمل على مدار الساعة:\n\n"
         "⚡ تجميع التكات التلقائي والمستمر\n"
-        "🧺 بيع وتفريغ السلة عند الامتلاء\n"
+        "🧺 بيع وتفريغ السلة عند الوصول لـ 5000 جوزة\n"
         "🐿️ شراء السناجب ودمجها تلقائياً لأعلى مستوى\n"
-        "📊 لوحة تحكم حية ومباشرة بدون إزعاج\n\n"
+        "📊 لوحة تحكم حية ومباشرة تتحدث في نفس الرسالة\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔑 أرسل كود الـ init-data الخاص بحسابك هنا للبدء:"
+        "🔑 أرسل كود الـ init-data الخاص بحسابك هنا للبدء مباشرة:"
     )
     bot.reply_to(message, welcome_msg)
-    if token:
+    if load_user_token(chat_id):
         start_user_thread(chat_id)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_incoming_token(message):
     chat_id = message.chat.id
     text = message.text.strip()
+    
     if "user=" in text or "hash=" in text:
         if "&tgWebApp" in text:
             text = text.split("&tgWebApp")[0]
-        
-        # حفظ التوكن الجديد
+            
         with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
             f.write(text)
             
-        # تصفير الـ Message ID لترسل اللوحة كرسالة جديدة تظهر فوراً في الأسفل
         user_status_messages[chat_id] = None
-
+        
         success_msg = (
             "╔══════════════════════╗\n"
             "      ✅ تم التحقق والربط بنجاح ✅      \n"
             "╚══════════════════════╝\n\n"
             "🚀 تم استلام التوكن وحفظه لحسابك!\n"
-            "🎮 جاري الاتصال بخوادم اللعبة وبدء تشغيل اللوحة التفاعلية..."
+            "🎮 جاري الاتصال بخوادم اللعبة وتشغيل اللوحة الحية..."
         )
         bot.reply_to(message, success_msg)
         start_user_thread(chat_id)
@@ -494,14 +443,14 @@ def handle_incoming_token(message):
             "╔══════════════════════╗\n"
             "       ❌ تنسيق غير صالح ❌       \n"
             "╚══════════════════════╝\n\n"
-            "⚠️ النص المرسل لا يحتوي على بيانات  صالحة.\n"
-            "تأكد من نسخ النص الذي يحتوي على= أو = بالكامل."
+            "⚠️ النص المرسل لا يحتوي على بيانات init-data صالحة.\n"
+            "تأكد من نسخ النص الذي يحتوي على user= و hash= بالكامل."
         )
         bot.reply_to(message, invalid_msg)
 
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
-    
+
     for fname in os.listdir("."):
         if fname.startswith("token_") and fname.endswith(".txt"):
             try:
