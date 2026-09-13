@@ -11,20 +11,19 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 user_status_messages = {}
 active_threads = {}
-user_stats = {}
 
-# --- سيرفر ويب مصغر لإبقاء الاستضافة نشطة 24/7 ---
+# --- سيرفر ويب لإبقاء الاستضافة نشطة 24/7 ---
 server = Flask(__name__)
 
 @server.route('/')
 def home():
-    return "Nutsca Pro Bot is Running 24/7!"
+    return "Nutsca Pro Multi-User Bot is Running 24/7!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server.run(host="0.0.0.0", port=port)
 
-# --- إعدادات وروابط اللعبة ---
+# --- روابط واجهات برمجة اللعبة ---
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -97,7 +96,7 @@ def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, bask
         f"⏱️ مدة التشغيل: {format_uptime(uptime_sec)}\n"
         f"📊 الحالة: {status_text}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔄 التحديث: يتم تعديل هذه الرسالة تلقائياً"
+        "🔄 التحديث: يتم تعديل هذه اللوحة تلقائياً"
     )
 
 def update_or_send_msg(chat_id, text):
@@ -124,8 +123,8 @@ def send_alert_msg(chat_id, text):
 def reset_and_reenter(headers):
     new_session = requests.Session()
     try:
-        new_session.get(status_url, headers=headers, timeout=10)
-        new_session.get(state_url, headers=headers, timeout=10)
+        new_session.get(status_url, headers=headers, timeout=8)
+        new_session.get(state_url, headers=headers, timeout=8)
     except Exception:
         pass
     return new_session
@@ -143,7 +142,7 @@ def get_highest_squirrel_level(grid):
 
 def get_basket_info(session, headers):
     try:
-        apiary_resp = session.get(apiary_url, headers=headers, timeout=10)
+        apiary_resp = session.get(apiary_url, headers=headers, timeout=8)
         if apiary_resp.status_code == 200:
             apiary_data = apiary_resp.json()
             nuts_amount = 0.0
@@ -172,7 +171,7 @@ def get_basket_info(session, headers):
 
 def execute_sell(session, headers):
     try:
-        sell_resp = session.post(sell_url, headers=headers, json={}, timeout=15)
+        sell_resp = session.post(sell_url, headers=headers, json={}, timeout=10)
         if sell_resp.status_code == 200:
             sell_data = sell_resp.json()
             current_b = sell_data.get("balanceB", 0)
@@ -184,9 +183,11 @@ def execute_sell(session, headers):
 
 def auto_merge_all(session, headers):
     grid_out = []
-    while True:
+    loops = 0
+    while loops < 15:
+        loops += 1
         try:
-            state_resp = session.get(state_url, headers=headers, timeout=10)
+            state_resp = session.get(state_url, headers=headers, timeout=8)
             if state_resp.status_code != 200:
                 break
                 
@@ -220,9 +221,9 @@ def auto_merge_all(session, headers):
                 "to": pos_to
             }
             
-            merge_resp = session.post(action_url, headers=headers, json=payload, timeout=15)
+            merge_resp = session.post(action_url, headers=headers, json=payload, timeout=10)
             if merge_resp.status_code == 200:
-                time.sleep(0.5)
+                time.sleep(0.3)
             else:
                 break
         except Exception:
@@ -231,7 +232,7 @@ def auto_merge_all(session, headers):
 
 def buy_squirrel(session, headers, level):
     try:
-        state_resp = session.get(state_url, headers=headers, timeout=10)
+        state_resp = session.get(state_url, headers=headers, timeout=8)
         if state_resp.status_code != 200:
             return None, None
         
@@ -259,7 +260,7 @@ def buy_squirrel(session, headers, level):
             "to": empty_slot
         }
         
-        buy_resp = session.post(action_url, headers=headers, json=payload, timeout=15)
+        buy_resp = session.post(action_url, headers=headers, json=payload, timeout=10)
         if buy_resp.status_code == 200:
             buy_data = buy_resp.json()
             new_balance = buy_data.get("balanceB", 0)
@@ -280,16 +281,27 @@ def try_buy_best_squirrel(session, headers, balance):
             break
     return balance, latest_grid, bought_level
 
-# --- مسار عمل كل مستخدم ---
+# --- مسار عمل البوت لكل مستخدم ---
 def bot_worker_for_user(chat_id):
     headers = DEFAULT_HEADERS.copy()
     current_token = load_user_token(chat_id)
 
     while not current_token:
-        time.sleep(4)
+        time.sleep(3)
         current_token = load_user_token(chat_id)
 
     headers["x-telegram-init-data"] = current_token
+    session = requests.Session()
+
+    # فحص أولي مباشر للتوكن لمعرفة سبب أي تعليق
+    try:
+        check_resp = session.post(tick_url, headers=headers, json={}, timeout=8)
+        if check_resp.status_code in [400, 401]:
+            send_alert_msg(chat_id, "❌ التوكن منتهي الصلاحية أو غير صالح!\nيرجى فتح اللعبة ونسخ init-data جديد وإرساله هنا.")
+            return
+    except Exception:
+        pass
+
     session = reset_and_reenter(headers)
     grid = auto_merge_all(session, headers)
     
@@ -300,7 +312,8 @@ def bot_worker_for_user(chat_id):
     last_balance = None
     start_time = time.time()
 
-    update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم الاتصال بالخادم بنجاح! 🚀"))
+    # إرسال لوحة التحكم فوراً دون تأخير
+    update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم الاتصال وبدء العمل بنجاح! 🚀"))
 
     while True:
         fresh_token = load_user_token(chat_id)
@@ -313,7 +326,7 @@ def bot_worker_for_user(chat_id):
 
         try:
             uptime_sec = time.time() - start_time
-            response = session.post(tick_url, headers=headers, json={}, timeout=15)
+            response = session.post(tick_url, headers=headers, json={}, timeout=12)
 
             if response.status_code == 200:
                 data = response.json()
@@ -367,8 +380,8 @@ def bot_worker_for_user(chat_id):
                     "╔══════════════════════╗\n"
                     "   🚨  انتهت صلاحية الجلسة  🚨\n"
                     "╚══════════════════════╝\n\n"
-                    "⌛ انتهت صلاحية التوكن الحالي أو تم فتح اللعبة من جهاز آخر.\n"
-                    "🔑 يرجى نسخ التوكن الجديد وإرساله هنا فوراً لاستئناف التجميع دون توقف!"
+                    "⌛ انتهت صلاحية التوكن الحالي أو تم تسجيل الدخول من جهاز آخر.\n"
+                    "🔑 يرجى استخراج init-data جديد وإرساله هنا لاستئناف التجميع فوراً!"
                 )
                 send_alert_msg(chat_id, token_expired_msg)
                 
@@ -393,7 +406,7 @@ def start_user_thread(chat_id):
         active_threads[chat_id] = t
         t.start()
 
-# --- معالجة رسائل تيليجرام ---
+# --- استقبال رسائل تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
@@ -444,13 +457,14 @@ def handle_incoming_token(message):
             "       ❌ تنسيق غير صالح ❌       \n"
             "╚══════════════════════╝\n\n"
             "⚠️ النص المرسل لا يحتوي على بيانات init-data صالحة.\n"
-            "تأكد من نسخ النص الذي يحتوي على user= و hash= بالكامل."
+            "تأكد من نسخ النص الذي يحتوي على user= أو hash= بالكامل."
         )
         bot.reply_to(message, invalid_msg)
 
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
 
+    # تشغيل تلقائي لكل من لديه توكن محفوظ
     for fname in os.listdir("."):
         if fname.startswith("token_") and fname.endswith(".txt"):
             try:
@@ -459,4 +473,11 @@ if __name__ == "__main__":
             except Exception:
                 pass
 
-    bot.infinity_polling()
+    # إزالة أي Webhook معلق لمنع خطأ Conflict 409
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception:
+        pass
+
+    bot.infinity_polling(skip_pending=True)
