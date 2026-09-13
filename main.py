@@ -6,16 +6,14 @@ import requests
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# --- إعدادات البوت وتيليجرام ---
 TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 user_status_messages = {}
 active_threads = {}
-user_states = {}  # {chat_id: {"paused": False, "force_sell": False, "start_time": time.time()}}
+user_states = {}
 
-# --- سيرفر ويب مصغر لإبقاء الاستضافة المجانية نشطة ---
 server = Flask(__name__)
 
 @server.route('/')
@@ -26,7 +24,6 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server.run(host="0.0.0.0", port=port)
 
-# --- إعدادات لعبة Nutsca ---
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -74,7 +71,7 @@ def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, bask
     rate_per_hour = total_profit / hours_run
     bar = make_progress_bar(basket_percent)
 
-    dashboard = (
+    return (
         "╔══════════════════════╗\n"
         "       🌰 لوحة تحكم NUTSCA PRO 🌰       \n"
         "╚══════════════════════╝\n\n"
@@ -89,7 +86,6 @@ def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, bask
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🔄 التحديث: يتم تعديل هذه اللوحة تلقائياً"
     )
-    return dashboard
 
 def get_dashboard_keyboard(chat_id):
     is_paused = user_states.get(chat_id, {}).get("paused", False)
@@ -106,7 +102,7 @@ def get_dashboard_keyboard(chat_id):
 def update_or_send_msg(chat_id, text):
     msg_id = user_status_messages.get(chat_id)
     kb = get_dashboard_keyboard(chat_id)
-    if msg_id is not None:
+    if msg_id:
         try:
             bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, reply_markup=kb)
             return
@@ -128,10 +124,13 @@ def send_alert_msg(chat_id, text):
 def load_user_token(chat_id):
     filename = get_token_filename(chat_id)
     if os.path.exists(filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            t = f.read().strip()
-            if t:
-                return t
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+                if t:
+                    return t
+        except Exception:
+            pass
     return None
 
 def reset_and_reenter(headers):
@@ -145,10 +144,13 @@ def reset_and_reenter(headers):
 
 def get_highest_squirrel_level(grid):
     max_lvl = 0
+    if not isinstance(grid, list):
+        return 0
     for row in grid:
-        for val in row:
-            if isinstance(val, int) and val > max_lvl:
-                max_lvl = val
+        if isinstance(row, list):
+            for val in row:
+                if isinstance(val, int) and val > max_lvl:
+                    max_lvl = val
     return max_lvl
 
 def get_basket_info(session, headers):
@@ -290,27 +292,16 @@ def try_buy_best_squirrel(session, headers, balance):
             break
     return balance, latest_grid, bought_level
 
-# --- مسار عمل البوت لكل مستخدم ---
 def bot_worker_for_user(chat_id):
     headers = DEFAULT_HEADERS.copy()
-    token = load_user_token(chat_id)
     
     if chat_id not in user_states:
-        user_states[chat_id] = {"paused": False, "force_sell": False, "start_time": time.time()}
+        user_states[chat_id] = {"paused": False, "force_sell": False, "start_time": time.time(), "force_refresh": False}
 
-    if not token:
-        token_request_msg = (
-            "╔══════════════════════╗\n"
-            "   ⚠️  في انتظار إدخال التوكن  ⚠️\n"
-            "╚══════════════════════╝\n\n"
-            "🌾 لم يتم العثور على توكن تشغيل لحسابك!\n"
-            "📝 يرجى إرسال كود `x-telegram-init-data` هنا مباشرة\n"
-            "🚀 وسيبدأ البوت بالعمل والتجميع لك فوراً."
-        )
-        send_alert_msg(chat_id, token_request_msg)
-        while not token:
-            time.sleep(5)
-            token = load_user_token(chat_id)
+    token = load_user_token(chat_id)
+    while not token:
+        time.sleep(3)
+        token = load_user_token(chat_id)
 
     headers["x-telegram-init-data"] = token
     session = reset_and_reenter(headers)
@@ -326,17 +317,20 @@ def bot_worker_for_user(chat_id):
     update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم الاتصال بنجاح! 🚀"))
 
     while True:
-        if user_states[chat_id].get("paused", False):
-            uptime_sec = time.time() - user_states[chat_id]["start_time"]
-            update_or_send_msg(chat_id, build_dashboard_text(last_balance or 0.0, total_profit, highest_lvl, nuts, percent, uptime_sec, "⏸️ متوقف مؤقتاً (يمكنك اللعب من الهاتف)"))
-            time.sleep(5)
-            continue
-
+        # قراءة التوكن باستمرار في حال تم تحديثه
         fresh_token = load_user_token(chat_id)
         if fresh_token and fresh_token != token:
             token = fresh_token
             headers["x-telegram-init-data"] = token
+            session.close()
             session = reset_and_reenter(headers)
+            grid = auto_merge_all(session, headers)
+
+        if user_states[chat_id].get("paused", False):
+            uptime_sec = time.time() - user_states[chat_id]["start_time"]
+            update_or_send_msg(chat_id, build_dashboard_text(last_balance or 0.0, total_profit, highest_lvl, nuts, percent, uptime_sec, "⏸️ متوقف مؤقتاً (يمكنك اللعب من الهاتف)"))
+            time.sleep(4)
+            continue
 
         try:
             uptime_sec = time.time() - user_states[chat_id]["start_time"]
@@ -353,7 +347,7 @@ def bot_worker_for_user(chat_id):
                 last_balance = current_balance
 
                 nuts, percent, is_full = get_basket_info(session, headers)
-                status_text = "تجميع النقاط جاري..."
+                status_text = "تجميع النقاط جاري... ⚡"
 
                 should_sell = nuts >= 5000 or is_full or user_states[chat_id].get("force_sell", False)
                 if should_sell:
@@ -388,7 +382,14 @@ def bot_worker_for_user(chat_id):
                     grid = auto_merge_all(session, headers)
                     continue
 
-                time.sleep(interval)
+                # تقسيم مدة الانتظار للتحقق الفوري من أوامر الأزرار
+                sleep_count = 0
+                while sleep_count < interval:
+                    if user_states[chat_id].get("force_sell") or user_states[chat_id].get("paused") or user_states[chat_id].get("force_refresh"):
+                        user_states[chat_id]["force_refresh"] = False
+                        break
+                    time.sleep(1)
+                    sleep_count += 1
 
             elif response.status_code in [400, 401]:
                 session.close()
@@ -402,7 +403,7 @@ def bot_worker_for_user(chat_id):
                 send_alert_msg(chat_id, token_expired_msg)
                 old_token = token
                 while True:
-                    time.sleep(5)
+                    time.sleep(4)
                     new_token = load_user_token(chat_id)
                     if new_token and new_token != old_token:
                         token = new_token
@@ -410,10 +411,10 @@ def bot_worker_for_user(chat_id):
                         session = reset_and_reenter(headers)
                         break
             else:
-                time.sleep(10)
+                time.sleep(8)
 
         except Exception:
-            time.sleep(5)
+            time.sleep(4)
 
 def start_user_thread(chat_id):
     if chat_id not in active_threads or not active_threads[chat_id].is_alive():
@@ -421,16 +422,16 @@ def start_user_thread(chat_id):
         active_threads[chat_id] = t
         t.start()
 
-# --- معالجة الأزرار التفاعلية ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     data = call.data
     chat_id = call.message.chat.id
 
     if chat_id not in user_states:
-        user_states[chat_id] = {"paused": False, "force_sell": False, "start_time": time.time()}
+        user_states[chat_id] = {"paused": False, "force_sell": False, "start_time": time.time(), "force_refresh": False}
 
     if data.startswith("refresh_"):
+        user_states[chat_id]["force_refresh"] = True
         bot.answer_callback_query(call.id, "🔄 جاري التحديث الفوري...")
     elif data.startswith("sell_"):
         user_states[chat_id]["force_sell"] = True
@@ -440,10 +441,14 @@ def handle_callbacks(call):
         state_text = "تم إيقاف البوت مؤقتاً ⏸️" if user_states[chat_id]["paused"] else "تم استئناف العمل ▶️"
         bot.answer_callback_query(call.id, state_text)
 
-# --- استقبال التوكن والأوامر من تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
+    token = load_user_token(chat_id)
+    
+    # تفريغ معرف الرسالة القديمة لتوليد لوحة جديدة نظيفة
+    user_status_messages[chat_id] = None
+    
     welcome_msg = (
         "╔══════════════════════╗\n"
         "       🐿️ مرحباً بك في بوت NUTSCA 🐿️       \n"
@@ -454,10 +459,11 @@ def handle_start(message):
         "🐿️ شراء السناجب ودمجها تلقائياً لأعلى مستوى\n"
         "📊 لوحة تحكم حية ومباشرة بدون إزعاج\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔑 للبدء، قم بنسخ كود الـ init-data الخاص بحسابك وأرسله هنا مباشرة:"
+        "🔑 أرسل كود الـ init-data الخاص بحسابك هنا للبدء:"
     )
     bot.reply_to(message, welcome_msg)
-    start_user_thread(chat_id)
+    if token:
+        start_user_thread(chat_id)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_incoming_token(message):
@@ -467,9 +473,13 @@ def handle_incoming_token(message):
         if "&tgWebApp" in text:
             text = text.split("&tgWebApp")[0]
         
+        # حفظ التوكن الجديد
         with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
             f.write(text)
             
+        # تصفير الـ Message ID لترسل اللوحة كرسالة جديدة تظهر فوراً في الأسفل
+        user_status_messages[chat_id] = None
+
         success_msg = (
             "╔══════════════════════╗\n"
             "      ✅ تم التحقق والربط بنجاح ✅      \n"
@@ -484,8 +494,8 @@ def handle_incoming_token(message):
             "╔══════════════════════╗\n"
             "       ❌ تنسيق غير صالح ❌       \n"
             "╚══════════════════════╝\n\n"
-            "⚠️ النص المرسل لا يحتوي على بيانات init-data صالحة.\n"
-            "تأكد من نسخ النص الذي يحتوي على `query_id=` أو `user=` و `hash=` بالكامل."
+            "⚠️ النص المرسل لا يحتوي على بيانات  صالحة.\n"
+            "تأكد من نسخ النص الذي يحتوي على= أو = بالكامل."
         )
         bot.reply_to(message, invalid_msg)
 
