@@ -5,12 +5,49 @@ from flask import Flask
 import requests
 import telebot
 
-# --- إعدادات البوت وتيليجرام ---
+# --- إعدادات البوت وتيليجرام ونظام التفعيل ---
 TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
+# استبدل هذا الرابط برابط الـ Raw المباشر لملف licenses.json من مستودعك على GitHub
+GITHUB_LICENSES_URL = "https://raw.githubusercontent.com/username/repo/main/licenses.json"
+
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 user_status_messages = {}
 active_threads = {}
+
+# --- دوال التحقق من التفعيل والتراخيص ---
+def get_license_filename(chat_id):
+    return f"license_{chat_id}.txt"
+
+def load_user_key(chat_id):
+    filename = get_license_filename(chat_id)
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                k = f.read().strip()
+                if k:
+                    return k
+        except Exception:
+            pass
+    return None
+
+def verify_license_remote(user_key):
+    try:
+        resp = requests.get(GITHUB_LICENSES_URL, timeout=8)
+        if resp.status_code == 200:
+            licenses = resp.json()
+            if user_key in licenses:
+                status = licenses[user_key].get("status", "expired")
+                return status == "active"
+    except Exception:
+        pass
+    return False
+
+def is_user_authorized(chat_id):
+    user_key = load_user_key(chat_id)
+    if not user_key:
+        return False
+    return verify_license_remote(user_key)
 
 # --- سيرفر ويب مصغر لإبقاء الاستضافة نشطة 24/7 ---
 server = Flask(__name__)
@@ -198,7 +235,6 @@ def auto_merge_all(session, headers):
             grid_out = grid
             version = state_data.get("version", 0)
 
-            # تجميع مواقع السناجب المتشابهة في المستوى
             level_positions = {}
             for y_idx, row in enumerate(grid):
                 for x_idx, lvl in enumerate(row):
@@ -207,7 +243,6 @@ def auto_merge_all(session, headers):
                             level_positions[lvl] = []
                         level_positions[lvl].append({"x": x_idx, "y": y_idx})
 
-            # البحث عن زوج متطابق للدمج
             pair_found = None
             for lvl, positions in sorted(level_positions.items()):
                 if len(positions) >= 2:
@@ -232,7 +267,6 @@ def auto_merge_all(session, headers):
                     grid_out = resp_json["grid"]
                 time.sleep(0.35)
             else:
-                # محاولة عكس الإحداثيات إذا كان ترتيب السيرفر معكوساً
                 payload_alt = {
                     "action": "MOVE",
                     "version": version,
@@ -299,8 +333,12 @@ def try_buy_best_squirrel(session, headers, balance):
             break
     return balance, latest_grid, bought_level
 
-# --- مسار عمل البوت لكل مستخدم ---
+# --- مسار عمل البوت لكل مستخدم مع التحقق الدوري من الترخيص ---
 def bot_worker_for_user(chat_id):
+    if not is_user_authorized(chat_id):
+        send_alert_msg(chat_id, "🔒 حسابك غير مفعل! يرجى إدخال كود تفعيل صالح عبر الأمر:\n`/activate YOUR-KEY`")
+        return
+
     headers = DEFAULT_HEADERS.copy()
     current_token = load_user_token(chat_id)
 
@@ -328,10 +366,18 @@ def bot_worker_for_user(chat_id):
     total_profit = 0.0
     last_balance = None
     start_time = time.time()
+    last_license_check = time.time()
 
     update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم بدء التجميع ودمج السناجب! 🚀"))
 
     while True:
+        # فحص دوري لصلاحية المفتاح كل 10 دقائق
+        if time.time() - last_license_check > 600:
+            if not is_user_authorized(chat_id):
+                send_alert_msg(chat_id, "⚠️ انتهت صلاحية كود التفعيل الخاص بك وتم إيقاف البوت.")
+                break
+            last_license_check = time.time()
+
         fresh_token = load_user_token(chat_id)
         if fresh_token and fresh_token != current_token:
             current_token = fresh_token
@@ -417,16 +463,44 @@ def bot_worker_for_user(chat_id):
             time.sleep(4)
 
 def start_user_thread(chat_id):
+    if not is_user_authorized(chat_id):
+        return
     if chat_id not in active_threads or not active_threads[chat_id].is_alive():
         t = threading.Thread(target=bot_worker_for_user, args=(chat_id,), daemon=True)
         active_threads[chat_id] = t
         t.start()
 
-# --- استقبال رسائل تيليجرام ---
+# --- استقبال أوامر ورسائل تيليجرام ---
+@bot.message_handler(commands=['activate'])
+def handle_activation(message):
+    chat_id = message.chat.id
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "⚠️ يرجى إرسال الكود هكذا:\n`/activate YOUR-KEY`", parse_mode="Markdown")
+        return
+
+    key = parts[1].strip()
+    if verify_license_remote(key):
+        with open(get_license_filename(chat_id), "w", encoding="utf-8") as f:
+            f.write(key)
+        bot.reply_to(message, "✅ تم تفعيل اشتراكك بنجاح! يمكنك الآن إرسال بيانات init-data للبدء.")
+        if load_user_token(chat_id):
+            start_user_thread(chat_id)
+    else:
+        bot.reply_to(message, "❌ كود التفعيل غير صالح أو منتهي الصلاحية.")
+
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
     user_status_messages[chat_id] = None
+
+    if not is_user_authorized(chat_id):
+        bot.reply_to(
+            message,
+            "🔒 مرحباً بك!\nالبوت متاح للمشتركين فقط.\nيرجى تفعيل حسابك أولاً بكتابة:\n`/activate YOUR-KEY`",
+            parse_mode="Markdown"
+        )
+        return
 
     welcome_msg = (
         "╔══════════════════════╗\n"
@@ -448,6 +522,10 @@ def handle_start(message):
 def handle_incoming_token(message):
     chat_id = message.chat.id
     text = message.text.strip()
+
+    if not is_user_authorized(chat_id):
+        bot.reply_to(message, "🔒 يجب تفعيل البوت أولاً بكتابة:\n`/activate YOUR-KEY`", parse_mode="Markdown")
+        return
 
     if "user=" in text or "hash=" in text:
         if "&tgWebApp" in text:
@@ -484,7 +562,8 @@ if __name__ == "__main__":
         if fname.startswith("token_") and fname.endswith(".txt"):
             try:
                 saved_id = int(fname.replace("token_", "").replace(".txt", ""))
-                start_user_thread(saved_id)
+                if is_user_authorized(saved_id):
+                    start_user_thread(saved_id)
             except Exception:
                 pass
 
