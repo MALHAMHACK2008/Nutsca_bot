@@ -5,7 +5,7 @@ from flask import Flask
 import requests
 import telebot
 
-# --- إعدادات البوت ---
+# --- إعدادات البوت وتيليجرام ---
 TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
@@ -17,13 +17,13 @@ server = Flask(__name__)
 
 @server.route('/')
 def home():
-    return "Nutsca Pro Bot is Running 24/7!"
+    return "Nutsca Pro Multi-User Bot is Running 24/7!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server.run(host="0.0.0.0", port=port)
 
-# --- روابط اللعبة ---
+# --- روابط واجهات برمجة اللعبة ---
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -89,7 +89,7 @@ def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, bask
         "╚══════════════════════╝\n\n"
         f"💰 الرصيد الحالي: {balance:.2f} B\n"
         f"📈 إجمالي الأرباح: +{total_profit:.2f} B\n"
-        f"⚡ السرعة: ~{rate_per_hour:.2f} B / ساعة\n"
+        f"⚡ السرعة التقديرية: ~{rate_per_hour:.2f} B / ساعة\n"
         f"👑 أعلى سنجاب: لفل {highest_level}\n\n"
         f"🧺 حمولة السلة: {basket_nuts:.1f} / 5000\n"
         f"[{bar}] {basket_percent:.1f}%\n\n"
@@ -123,8 +123,8 @@ def send_alert_msg(chat_id, text):
 def reset_and_reenter(headers):
     new_session = requests.Session()
     try:
-        new_session.get(status_url, headers=headers, timeout=10)
-        new_session.get(state_url, headers=headers, timeout=10)
+        new_session.get(status_url, headers=headers, timeout=8)
+        new_session.get(state_url, headers=headers, timeout=8)
     except Exception:
         pass
     return new_session
@@ -142,7 +142,7 @@ def get_highest_squirrel_level(grid):
 
 def get_basket_info(session, headers):
     try:
-        apiary_resp = session.get(apiary_url, headers=headers, timeout=10)
+        apiary_resp = session.get(apiary_url, headers=headers, timeout=8)
         if apiary_resp.status_code == 200:
             apiary_data = apiary_resp.json()
             nuts_amount = 0.0
@@ -171,7 +171,7 @@ def get_basket_info(session, headers):
 
 def execute_sell(session, headers):
     try:
-        sell_resp = session.post(sell_url, headers=headers, json={}, timeout=15)
+        sell_resp = session.post(sell_url, headers=headers, json={}, timeout=10)
         if sell_resp.status_code == 200:
             sell_data = sell_resp.json()
             current_b = sell_data.get("balanceB", 0)
@@ -183,36 +183,40 @@ def execute_sell(session, headers):
 
 def auto_merge_all(session, headers):
     grid_out = []
-    loops = 0
-    while loops < 12:
-        loops += 1
+    max_cycles = 25
+    cycle = 0
+
+    while cycle < max_cycles:
+        cycle += 1
         try:
-            state_resp = session.get(state_url, headers=headers, timeout=10)
+            state_resp = session.get(state_url, headers=headers, timeout=8)
             if state_resp.status_code != 200:
                 break
-                
+
             state_data = state_resp.json()
             grid = state_data.get("grid", [])
             grid_out = grid
             version = state_data.get("version", 0)
-            
+
+            # تجميع مواقع السناجب المتشابهة في المستوى
             level_positions = {}
-            for y, row in enumerate(grid):
-                for x, lvl in enumerate(row):
-                    if lvl > 0:
+            for y_idx, row in enumerate(grid):
+                for x_idx, lvl in enumerate(row):
+                    if isinstance(lvl, int) and lvl > 0:
                         if lvl not in level_positions:
                             level_positions[lvl] = []
-                        level_positions[lvl].append({"x": y, "y": x})
-            
+                        level_positions[lvl].append({"x": x_idx, "y": y_idx})
+
+            # البحث عن زوج متطابق للدمج
             pair_found = None
             for lvl, positions in sorted(level_positions.items()):
                 if len(positions) >= 2:
                     pair_found = (positions[0], positions[1])
                     break
-                    
+
             if not pair_found:
                 break
-                
+
             pos_from, pos_to = pair_found
             payload = {
                 "action": "MOVE",
@@ -220,38 +224,52 @@ def auto_merge_all(session, headers):
                 "from": pos_from,
                 "to": pos_to
             }
-            
-            merge_resp = session.post(action_url, headers=headers, json=payload, timeout=15)
+
+            merge_resp = session.post(action_url, headers=headers, json=payload, timeout=8)
             if merge_resp.status_code == 200:
-                time.sleep(0.4)
+                resp_json = merge_resp.json()
+                if "grid" in resp_json:
+                    grid_out = resp_json["grid"]
+                time.sleep(0.35)
             else:
+                # محاولة عكس الإحداثيات إذا كان ترتيب السيرفر معكوساً
+                payload_alt = {
+                    "action": "MOVE",
+                    "version": version,
+                    "from": {"x": pos_from["y"], "y": pos_from["x"]},
+                    "to": {"x": pos_to["y"], "y": pos_to["x"]}
+                }
+                session.post(action_url, headers=headers, json=payload_alt, timeout=8)
+                time.sleep(0.35)
                 break
+
         except Exception:
             break
+
     return grid_out
 
 def buy_squirrel(session, headers, level):
     try:
-        state_resp = session.get(state_url, headers=headers, timeout=10)
+        state_resp = session.get(state_url, headers=headers, timeout=8)
         if state_resp.status_code != 200:
             return None, None
-        
+
         state_data = state_resp.json()
         grid = state_data.get("grid", [])
         version = state_data.get("version", 0)
-        
+
         empty_slot = None
-        for y, row in enumerate(grid):
-            for x, val in enumerate(row):
+        for y_idx, row in enumerate(grid):
+            for x_idx, val in enumerate(row):
                 if val == 0:
-                    empty_slot = {"x": x, "y": y}
+                    empty_slot = {"x": x_idx, "y": y_idx}
                     break
             if empty_slot:
                 break
-                
+
         if not empty_slot:
             return None, grid
-            
+
         payload = {
             "action": "PLACE",
             "version": version,
@@ -259,8 +277,8 @@ def buy_squirrel(session, headers, level):
             "slotLevel": level,
             "to": empty_slot
         }
-        
-        buy_resp = session.post(action_url, headers=headers, json=payload, timeout=15)
+
+        buy_resp = session.post(action_url, headers=headers, json=payload, timeout=10)
         if buy_resp.status_code == 200:
             buy_data = buy_resp.json()
             new_balance = buy_data.get("balanceB", 0)
@@ -291,15 +309,27 @@ def bot_worker_for_user(chat_id):
         current_token = load_user_token(chat_id)
 
     headers["x-telegram-init-data"] = current_token
+    session = requests.Session()
+
+    try:
+        check_resp = session.post(tick_url, headers=headers, json={}, timeout=8)
+        if check_resp.status_code in [400, 401]:
+            send_alert_msg(chat_id, "❌ التوكن منتهي الصلاحية أو غير صالح!\nيرجى فتح اللعبة ونسخ init-data جديد وإرساله هنا.")
+            return
+    except Exception:
+        pass
+
     session = reset_and_reenter(headers)
     grid = auto_merge_all(session, headers)
-    
+
     highest_lvl = get_highest_squirrel_level(grid)
     nuts, percent, _ = get_basket_info(session, headers)
-    
+
     total_profit = 0.0
     last_balance = None
     start_time = time.time()
+
+    update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم بدء التجميع ودمج السناجب! 🚀"))
 
     while True:
         fresh_token = load_user_token(chat_id)
@@ -312,7 +342,7 @@ def bot_worker_for_user(chat_id):
 
         try:
             uptime_sec = time.time() - start_time
-            response = session.post(tick_url, headers=headers, json={}, timeout=15)
+            response = session.post(tick_url, headers=headers, json={}, timeout=12)
 
             if response.status_code == 200:
                 data = response.json()
@@ -370,8 +400,7 @@ def bot_worker_for_user(chat_id):
                     "🔑 يرجى نسخ التوكن الجديد وإرساله هنا فوراً لاستئناف التجميع دون توقف!"
                 )
                 send_alert_msg(chat_id, token_expired_msg)
-                
-                # ينتظر هنا بصمت حتى ترسل التوكن الجديد دون تكرار إرسال الرسائل
+
                 old_token = current_token
                 while True:
                     time.sleep(4)
@@ -393,17 +422,17 @@ def start_user_thread(chat_id):
         active_threads[chat_id] = t
         t.start()
 
-# --- معالجة رسائل تيليجرام ---
+# --- استقبال رسائل تيليجرام ---
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
     user_status_messages[chat_id] = None
-    
+
     welcome_msg = (
         "╔══════════════════════╗\n"
         "       🐿️ مرحباً بك في بوت NUTSCA 🐿️       \n"
         "╚══════════════════════╝\n\n"
-        "✨ نظام التجميع الذكي يعمل على مدار الساعة:\n\n"
+        "✨ نظام التجميع والدمج الذكي يعمل على مدار الساعة:\n\n"
         "⚡ تجميع التكات التلقائي والمستمر\n"
         "🧺 بيع وتفريغ السلة عند الوصول لـ 5000 جوزة\n"
         "🐿️ شراء السناجب ودمجها تلقائياً لأعلى مستوى\n"
@@ -419,16 +448,16 @@ def handle_start(message):
 def handle_incoming_token(message):
     chat_id = message.chat.id
     text = message.text.strip()
-    
+
     if "user=" in text or "hash=" in text:
         if "&tgWebApp" in text:
             text = text.split("&tgWebApp")[0]
-            
+
         with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
             f.write(text)
-            
+
         user_status_messages[chat_id] = None
-        
+
         success_msg = (
             "╔══════════════════════╗\n"
             "      ✅ تم التحقق والربط بنجاح ✅      \n"
