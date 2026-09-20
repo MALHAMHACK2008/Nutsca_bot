@@ -7,7 +7,6 @@ import telebot
 
 # --- إعدادات البوت وتيليجرام ونظام التفعيل ---
 TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
-# استبدل هذا الرابط برابط الـ Raw المباشر لملف licenses.json من مستودعك على GitHub
 GITHUB_LICENSES_URL = "https://raw.githubusercontent.com/MALHAMHACK2008/Nutsca_bot/refs/heads/main/licenses.json"
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
@@ -245,6 +244,9 @@ def auto_merge_all(session, headers):
 
             pair_found = None
             for lvl, positions in sorted(level_positions.items()):
+                # حماية سقف الدمج: استثناء لفل 13 لمنع خطأ max_level_reached
+                if lvl >= 13:
+                    continue
                 if len(positions) >= 2:
                     pair_found = (positions[0], positions[1])
                     break
@@ -292,24 +294,36 @@ def buy_squirrel(session, headers, level):
         grid = state_data.get("grid", [])
         version = state_data.get("version", 0)
 
-        empty_slot = None
+        empty_slots = []
+        counts_by_level = {}
+
         for y_idx, row in enumerate(grid):
             for x_idx, val in enumerate(row):
                 if val == 0:
-                    empty_slot = {"x": x_idx, "y": y_idx}
-                    break
-            if empty_slot:
-                break
+                    empty_slots.append({"x": x_idx, "y": y_idx})
+                elif isinstance(val, int) and val > 0:
+                    counts_by_level[val] = counts_by_level.get(val, 0) + 1
 
-        if not empty_slot:
+        free_slots_count = len(empty_slots)
+
+        # إذا كانت اللوحة ممتلئة تماماً
+        if free_slots_count == 0:
             return None, grid
+
+        # --- حماية الانسداد (Softlock Guard) ---
+        # إذا بقيت خانة واحدة فقط، لا يتم الشراء إلا إذا كان يوجد سنجاب من نفس المستوى لدمجه فوراً
+        has_matching = counts_by_level.get(level, 0) > 0
+        if free_slots_count == 1 and not has_matching:
+            return None, grid
+
+        target_slot = empty_slots[0]
 
         payload = {
             "action": "PLACE",
             "version": version,
             "slotMode": "BUY",
             "slotLevel": level,
-            "to": empty_slot
+            "to": target_slot
         }
 
         buy_resp = session.post(action_url, headers=headers, json=payload, timeout=10)
@@ -371,7 +385,6 @@ def bot_worker_for_user(chat_id):
     update_or_send_msg(chat_id, build_dashboard_text(0.0, total_profit, highest_lvl, nuts, percent, 0, "تم بدء التجميع ودمج السناجب! 🚀"))
 
     while True:
-        # فحص دوري لصلاحية المفتاح كل 10 دقائق
         if time.time() - last_license_check > 600:
             if not is_user_authorized(chat_id):
                 send_alert_msg(chat_id, "⚠️ انتهت صلاحية كود التفعيل الخاص بك وتم إيقاف البوت.")
