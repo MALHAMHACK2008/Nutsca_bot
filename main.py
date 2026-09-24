@@ -6,7 +6,7 @@ import requests
 import telebot
 
 # --- إعدادات البوت وتيليجرام ونظام التفعيل ---
-TELEGRAM_BOT_TOKEN = "8558672736:AAEU9XK5GL1WDBr1FzEgV5y_Kj0QeNznbd8"
+TELEGRAM_BOT_TOKEN = "8681823633:AAHTWPwD-kado7dG265IO7s7sN54WhWXSv0"
 GITHUB_LICENSES_URL = "https://raw.githubusercontent.com/MALHAMHACK2008/Nutsca_bot/refs/heads/main/licenses.json"
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
