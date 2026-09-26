@@ -24,7 +24,6 @@ GITHUB_LICENSES_URL = "https://raw.githubusercontent.com/MALHAMHACK2008/Nutsca_b
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "d3965b64eb7e251a915ccd8ce3ee8104")
 
-# البوت المستهدف الصحيح للعبة السنجاب
 TARGET_GAME_BOT = "GoldNuts_Bot"
 GAME_APP_URL = "https://game.nutsca.com/"
 
@@ -34,6 +33,7 @@ user_status_messages = {}
 active_threads = {}
 waiting_wallet = set()
 waiting_manual_token = set()
+waiting_session = set()
 
 telethon_loop = asyncio.new_event_loop()
 def run_tele_loop(loop):
@@ -100,7 +100,7 @@ server = Flask(__name__)
 def home(): return "Nutsca GoldNuts Isolated Auto-Pull is Running 24/7!"
 threading.Thread(target=lambda: server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080))), daemon=True).start()
 
-# --- سحب الـ initData عبر Telethon مع البوت المستهدف الصحيح ---
+# --- سحب الـ initData عبر Telethon ---
 def fetch_token_from_session(session_str):
     async def _fetch():
         clean_target = TARGET_GAME_BOT.replace("@", "").strip()
@@ -134,7 +134,7 @@ def fetch_token_from_session(session_str):
     except Exception:
         return None
 
-# روابط ومسارات اللعبة
+# روابط اللعبة
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -165,13 +165,17 @@ def format_uptime(seconds):
     hours, mins = divmod(mins, 60)
     return f"{hours} س و {mins} د" if hours > 0 else f"{mins} د و {sec} ث"
 
+# أزرار لوحة التحكم
 def get_dashboard_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_withdraw = types.InlineKeyboardButton("💸 سحب الأرباح الآن", callback_data="manual_withdraw")
+    btn_session = types.InlineKeyboardButton("📱 ربط / تغيير الجلسة النصية", callback_data="ask_session")
     btn_wallet = types.InlineKeyboardButton("💳 تعيين المحفظة", callback_data="set_wallet")
     btn_retry = types.InlineKeyboardButton("🔄 إعادة سحب الجلسة", callback_data="retry_pull")
     btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="enter_token")
+    
     markup.add(btn_withdraw)
+    markup.add(btn_session)
     markup.add(btn_wallet, btn_retry)
     markup.add(btn_manual)
     return markup
@@ -338,7 +342,7 @@ def try_buy_best_squirrel(session, headers, balance):
             break
     return balance, None, None
 
-# --- محرك التعدين لكل مستخدم بشكل مستقل ---
+# --- محرك التعدين لكل مستخدم ---
 def bot_worker_for_user(chat_id):
     if not is_user_authorized(chat_id):
         return
@@ -356,7 +360,7 @@ def bot_worker_for_user(chat_id):
                 f.write(current_token)
 
     if not current_token:
-        bot.send_message(chat_id, f"❌ <b>تعذر سحب التوكن من @{TARGET_GAME_BOT}</b>\nتأكد من فتح اللعبة لمرة واحدة، أو استخدم زر <b>'🔑 إدخال توكن يدوي'</b>.", parse_mode="HTML")
+        bot.send_message(chat_id, f"❌ <b>تعذر سحب التوكن من @{TARGET_GAME_BOT}</b>\nاضغط على <b>'📱 ربط / تغيير الجلسة النصية'</b> لإعادة إرسال كود الجلسة أو استخدم <b>'🔑 إدخال توكن يدوي'</b>.", parse_mode="HTML")
         return
 
     headers["x-telegram-init-data"] = current_token
@@ -373,7 +377,19 @@ def bot_worker_for_user(chat_id):
 
     while True:
         try:
-            # تحديث دوري للتوكن كل 40 دقيقة عبر الجلسة إن توفرت
+            # إعادة سحب التوكن من الجلسة في حال تم تحديثها
+            new_session_check = load_user_session(chat_id)
+            if new_session_check and new_session_check != session_str:
+                session_str = new_session_check
+                fresh = fetch_token_from_session(session_str)
+                if fresh:
+                    current_token = fresh
+                    with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
+                        f.write(fresh)
+                    headers["x-telegram-init-data"] = current_token
+                    session.close()
+                    session = reset_and_reenter(headers)
+
             if session_str and (time.time() - last_token_refresh > 2400):
                 fresh = fetch_token_from_session(session_str)
                 if fresh:
@@ -450,7 +466,7 @@ def start_user_thread(chat_id):
         active_threads[chat_id] = t
         t.start()
 
-# --- معالجة الأزرار (Callback Queries) ---
+# --- معالجة الضغط على الأزرار ---
 @bot.callback_query_handler(func=lambda call: True)
 def on_btn_click(call):
     cid = call.message.chat.id
@@ -458,7 +474,12 @@ def on_btn_click(call):
         bot.answer_callback_query(call.id, "الحساب غير مفعل 🔒")
         return
 
-    if call.data == "manual_withdraw":
+    if call.data == "ask_session":
+        waiting_session.add(cid)
+        bot.send_message(cid, "📱 <b>أرسل الآن كود الجلسة النصية (StringSession) الخاص بحسابك:</b>\n(المستخرج كسطر واحد من Pydroid 3)", parse_mode="HTML")
+        bot.answer_callback_query(call.id, "بانتظار كود الجلسة...")
+
+    elif call.data == "manual_withdraw":
         wallet = load_user_wallet(cid)
         token = load_user_token(cid)
         if not wallet:
@@ -497,14 +518,14 @@ def on_btn_click(call):
             bot.send_message(cid, "✅ تم سحب التوكن بنجاح وبدء التعدين!")
             start_user_thread(cid)
         else:
-            bot.send_message(cid, f"❌ تعذر السحب تلقائياً من @{TARGET_GAME_BOT}. استخدم زر '🔑 إدخال توكن يدوي'.")
+            bot.send_message(cid, f"❌ تعذر السحب تلقائياً من @{TARGET_GAME_BOT}. تأكد من فتح اللعبة أولاً أو استخدم '🔑 إدخال توكن يدوي'.")
 
     elif call.data == "enter_token":
         waiting_manual_token.add(cid)
         bot.send_message(cid, "🔑 <b>أرسل سطر initData أو رابط الويب كاملاً هنا:</b>", parse_mode="HTML")
         bot.answer_callback_query(call.id, "بانتظار التوكن...")
 
-# --- معالجة الرسائل النصية ---
+# --- معالجة الرسائل والأوامر ---
 @bot.message_handler(commands=['wallet'])
 def handle_wallet_cmd(message):
     cid = message.chat.id
@@ -527,7 +548,7 @@ def handle_activate_cmd(message):
     k = parts[1].strip()
     if verify_license_remote(k):
         with open(get_license_filename(cid), "w", encoding="utf-8") as f: f.write(k)
-        bot.reply_to(message, "✅ <b>تم التفعيل بنجاح!</b>\nأرسل الآن كود جلستك النصية (StringSession) للبدء فوراً.", parse_mode="HTML")
+        bot.reply_to(message, "✅ <b>تم التفعيل بنجاح!</b>\nاضغط الآن على <b>'📱 ربط / تغيير الجلسة النصية'</b> أو أرسل كود الجلسة مباشرة للبدء.", parse_mode="HTML", reply_markup=get_dashboard_markup())
     else:
         bot.reply_to(message, "❌ كود التفعيل غير صالح.")
 
@@ -537,7 +558,7 @@ def handle_start_cmd(message):
     if not is_user_authorized(cid):
         bot.reply_to(message, "🔒 البوت متاح للمشتركين فقط.\nفعّل حسابك بكتابة:\n`/activate YOUR-KEY`", parse_mode="Markdown")
         return
-    bot.reply_to(message, f"🐿️ <b>مرحباً بك!</b>\nالبوت متصل بـ <b>@{TARGET_GAME_BOT}</b>.\nأرسل كود جلستك النصية (StringSession) أو التوكن اليدوي للبدء.", parse_mode="HTML")
+    bot.reply_to(message, f"🐿️ <b>مرحباً بك في بوت NUTSCA!</b>\nاستخدم الأزرار في الأسفل للتحكم بربط الجلسة، تعيين المحفظة، أو السحب الفوري.", parse_mode="HTML", reply_markup=get_dashboard_markup())
     if load_user_token(cid) or load_user_session(cid):
         start_user_thread(cid)
 
@@ -550,6 +571,7 @@ def handle_all_text(message):
         bot.reply_to(message, "🔒 يجب تفعيل البوت أولاً عبر الأمر:\n`/activate YOUR-KEY`", parse_mode="Markdown")
         return
 
+    # حفظ المحفظة
     if cid in waiting_wallet:
         waiting_wallet.remove(cid)
         with open(get_wallet_filename(cid), "w", encoding="utf-8") as f:
@@ -557,6 +579,7 @@ def handle_all_text(message):
         bot.reply_to(message, f"✅ <b>تم حفظ المحفظة بنجاح:</b>\n<code>{text}</code>", parse_mode="HTML")
         return
 
+    # حفظ التوكن اليدوي
     if cid in waiting_manual_token or "user=" in text or "hash=" in text:
         if cid in waiting_manual_token: waiting_manual_token.remove(cid)
         raw_text = text
@@ -568,16 +591,17 @@ def handle_all_text(message):
         start_user_thread(cid)
         return
 
-    # استقبال الجلسة النصية
+    # استقبال وحفظ الجلسة النصية
     clean_session = "".join(text.split())
-    if clean_session.startswith("1BJ") and len(clean_session) > 100:
+    if cid in waiting_session or (clean_session.startswith("1BJ") and len(clean_session) > 100):
+        if cid in waiting_session: waiting_session.remove(cid)
         with open(get_session_filename(cid), "w", encoding="utf-8") as f:
             f.write(clean_session)
-        bot.reply_to(message, f"✅ <b>تم حفظ جلستك!</b>\n⏳ جاري محاولة سحب التوكن تلقائياً من @{TARGET_GAME_BOT}...", parse_mode="HTML")
+        bot.reply_to(message, f"✅ <b>تم حفظ جلستك بنجاح!</b>\n⏳ جاري محاولة سحب التوكن تلقائياً من @{TARGET_GAME_BOT}...", parse_mode="HTML")
         start_user_thread(cid)
         return
 
-    bot.reply_to(message, "⚠️ يرجى إرسال كود الجلسة النصية أو استخدام أزرار لوحة التحكم.")
+    bot.reply_to(message, "⚠️ استخدم أزرار التحكم أدناه أو أرسل كود الجلسة بشكل صحيح.", reply_markup=get_dashboard_markup())
 
 if __name__ == "__main__":
     for f in os.listdir("."):
