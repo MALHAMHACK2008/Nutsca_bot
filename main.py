@@ -12,6 +12,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import telebot
+from telebot import types
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
@@ -23,60 +24,59 @@ GITHUB_LICENSES_URL = "https://raw.githubusercontent.com/MALHAMHACK2008/Nutsca_b
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "d3965b64eb7e251a915ccd8ce3ee8104")
 
-# إعدادات اللعبة والبوت المستهدف
-TARGET_GAME_BOT = "nutscabot"  # أو يوزر البوت الخاص بلعبة السنجاب
+# البوت المستهدف الصحيح للعبة السنجاب
+TARGET_GAME_BOT = "GoldNuts_Bot"
 GAME_APP_URL = "https://game.nutsca.com/"
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 user_status_messages = {}
 active_threads = {}
+waiting_wallet = set()
+waiting_manual_token = set()
 
-# حلقة Telethon للسحب المتزامن
 telethon_loop = asyncio.new_event_loop()
 def run_tele_loop(loop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
 threading.Thread(target=run_tele_loop, args=(telethon_loop,), daemon=True).start()
 
-# --- إدارة الملفات المستقلة لكل مستخدم ---
-def get_license_filename(chat_id):
-    return f"license_{chat_id}.txt"
-
-def get_session_filename(chat_id):
-    return f"session_{chat_id}.txt"
-
-def get_wallet_filename(chat_id):
-    return f"wallet_{chat_id}.txt"
+# --- إدارة بيانات المستخدمين المستقلة ---
+def get_license_filename(chat_id): return f"license_{chat_id}.txt"
+def get_session_filename(chat_id): return f"session_{chat_id}.txt"
+def get_token_filename(chat_id): return f"token_{chat_id}.txt"
+def get_wallet_filename(chat_id): return f"wallet_{chat_id}.txt"
 
 def load_user_key(chat_id):
-    fpath = get_license_filename(chat_id)
-    if os.path.exists(fpath):
+    f = get_license_filename(chat_id)
+    if os.path.exists(f):
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            pass
+            with open(f, "r", encoding="utf-8") as file: return file.read().strip()
+        except Exception: pass
     return None
 
 def load_user_session(chat_id):
-    fpath = get_session_filename(chat_id)
-    if os.path.exists(fpath):
+    f = get_session_filename(chat_id)
+    if os.path.exists(f):
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            pass
+            with open(f, "r", encoding="utf-8") as file: return file.read().strip()
+        except Exception: pass
+    return None
+
+def load_user_token(chat_id):
+    f = get_token_filename(chat_id)
+    if os.path.exists(f):
+        try:
+            with open(f, "r", encoding="utf-8") as file: return file.read().strip()
+        except Exception: pass
     return None
 
 def load_user_wallet(chat_id):
-    fpath = get_wallet_filename(chat_id)
-    if os.path.exists(fpath):
+    f = get_wallet_filename(chat_id)
+    if os.path.exists(f):
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            pass
+            with open(f, "r", encoding="utf-8") as file: return file.read().strip()
+        except Exception: pass
     return None
 
 def verify_license_remote(user_key):
@@ -91,19 +91,16 @@ def verify_license_remote(user_key):
     return False
 
 def is_user_authorized(chat_id):
-    key = load_user_key(chat_id)
-    if not key:
-        return False
-    return verify_license_remote(key)
+    k = load_user_key(chat_id)
+    return verify_license_remote(k) if k else False
 
-# سيرفر إبقاء البوت نشطاً
+# سيرفر إبقاء السكربت شغالاً 24/7
 server = Flask(__name__)
 @server.route('/')
-def home():
-    return "Nutsca Auto-Pull & Withdraw Bot Running 24/7!"
+def home(): return "Nutsca GoldNuts Isolated Auto-Pull is Running 24/7!"
 threading.Thread(target=lambda: server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080))), daemon=True).start()
 
-# --- سحب الـ initData تلقائياً عبر الجلسة ---
+# --- سحب الـ initData عبر Telethon مع البوت المستهدف الصحيح ---
 def fetch_token_from_session(session_str):
     async def _fetch():
         clean_target = TARGET_GAME_BOT.replace("@", "").strip()
@@ -128,8 +125,7 @@ def fetch_token_from_session(session_str):
         except Exception:
             try:
                 await client.disconnect()
-            except Exception:
-                pass
+            except Exception: pass
         return None
 
     try:
@@ -138,7 +134,7 @@ def fetch_token_from_session(session_str):
     except Exception:
         return None
 
-# روابط اللعبة
+# روابط ومسارات اللعبة
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -169,39 +165,49 @@ def format_uptime(seconds):
     hours, mins = divmod(mins, 60)
     return f"{hours} س و {mins} د" if hours > 0 else f"{mins} د و {sec} ث"
 
+def get_dashboard_markup():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    btn_withdraw = types.InlineKeyboardButton("💸 سحب الأرباح الآن", callback_data="manual_withdraw")
+    btn_wallet = types.InlineKeyboardButton("💳 تعيين المحفظة", callback_data="set_wallet")
+    btn_retry = types.InlineKeyboardButton("🔄 إعادة سحب الجلسة", callback_data="retry_pull")
+    btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="enter_token")
+    markup.add(btn_withdraw)
+    markup.add(btn_wallet, btn_retry)
+    markup.add(btn_manual)
+    return markup
+
 def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, basket_percent, uptime_sec, wallet_addr, status_text):
     hours_run = max(uptime_sec / 3600.0, 0.001)
     rate_per_hour = total_profit / hours_run
     bar = make_progress_bar(basket_percent)
-    w_text = f"<code>{wallet_addr[:8]}...{wallet_addr[-6:]}</code>" if wallet_addr else "⚠️ غير معينة (/wallet)"
+    w_text = f"<code>{wallet_addr[:8]}...{wallet_addr[-6:]}</code>" if wallet_addr else "⚠️ غير معينة"
 
     return (
         "╔══════════════════════╗\n"
         "       🐿️ لوحة تحكم NUTSCA PRO 🐿️       \n"
         "╚══════════════════════╝\n\n"
-        f"💰 الرصيد الحالي: {balance:.2f} B\n"
-        f"📈 إجمالي الأرباح: +{total_profit:.2f} B\n"
-        f"⚡ السرعة التقديرية: ~{rate_per_hour:.2f} B / ساعة\n"
-        f"👑 أعلى سنجاب: لفل {highest_level}\n\n"
-        f"🧺 حمولة السلة: {basket_nuts:.1f} / 5000\n"
+        f"• <b>البوت المستهدف:</b> <code>@{TARGET_GAME_BOT}</code>\n"
+        f"💰 <b>الرصيد الحالي:</b> <code>{balance:.2f} B</code>\n"
+        f"📈 <b>إجمالي الأرباح:</b> <code>+{total_profit:.2f} B</code>\n"
+        f"⚡ <b>السرعة:</b> <code>~{rate_per_hour:.2f} B / س</code>\n"
+        f"👑 <b>أعلى سنجاب:</b> <code>لفل {highest_level}</code>\n\n"
+        f"🧺 <b>حمولة السلة:</b> <code>{basket_nuts:.1f} / 5000</code>\n"
         f"[{bar}] {basket_percent:.1f}%\n\n"
-        f"💳 المحفظة: {w_text}\n"
-        f"⏱️ مدة التشغيل: {format_uptime(uptime_sec)}\n"
-        f"📊 الحالة: {status_text}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔄 السحب التلقائي: يتم السحب عند بلوغ 10,000 جوزة"
+        f"💳 <b>المحفظة:</b> {w_text}\n"
+        f"⏱️ <b>مدة التشغيل:</b> {format_uptime(uptime_sec)}\n"
+        f"📊 <b>الحالة:</b> {status_text}\n"
     )
 
 def update_or_send_msg(chat_id, text):
     msg_id = user_status_messages.get(chat_id)
     if msg_id:
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode="HTML")
+            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode="HTML", reply_markup=get_dashboard_markup())
             return
         except Exception:
             pass
     try:
-        sent = bot.send_message(chat_id, text, parse_mode="HTML")
+        sent = bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=get_dashboard_markup())
         user_status_messages[chat_id] = sent.message_id
     except Exception:
         pass
@@ -239,11 +245,9 @@ def get_basket_info(session, headers):
                     try:
                         nuts = float(val)
                         break
-                    except Exception:
-                        pass
+                    except Exception: pass
             return nuts, min(100.0, (nuts / 5000.0) * 100.0), data.get("isFull", False)
-    except Exception:
-        pass
+    except Exception: pass
     return 0.0, 0.0, False
 
 def execute_sell(session, headers):
@@ -252,8 +256,7 @@ def execute_sell(session, headers):
         if r.status_code == 200:
             d = r.json()
             return float(d.get("balanceB", 0)), float(d.get("receiveBalanceB", 0)), True
-    except Exception:
-        pass
+    except Exception: pass
     return None, 0.0, False
 
 def execute_crypto_withdraw(session, headers, wallet_address, amount=50):
@@ -268,11 +271,12 @@ def execute_crypto_withdraw(session, headers, wallet_address, amount=50):
     try:
         r = session.post(withdraw_url, headers=headers, json=payload, timeout=12)
         if r.status_code == 200:
-            status = str(r.json().get("status", "")).upper()
+            res_data = r.json()
+            status = str(res_data.get("status", "")).upper()
             if status in ["CANCELLED", "CANCELED", "FAILED", "REJECTED"]:
                 return False, f"حالة الطلب: {status}"
-            return True, "تم السحب"
-        return False, f"كود: {r.status_code}"
+            return True, "تم إرسال طلب السحب بنجاح"
+        return False, f"خطأ خادم ({r.status_code})"
     except Exception as e:
         return False, str(e)
 
@@ -281,8 +285,7 @@ def auto_merge_all(session, headers):
     for _ in range(25):
         try:
             r = session.get(state_url, headers=headers, timeout=8)
-            if r.status_code != 200:
-                break
+            if r.status_code != 200: break
             d = r.json()
             grid = d.get("grid", [])
             grid_out = grid
@@ -299,37 +302,31 @@ def auto_merge_all(session, headers):
                 if len(pos_list) >= 2:
                     pair = (pos_list[0], pos_list[1])
                     break
-
-            if not pair:
-                break
+            if not pair: break
 
             p_from, p_to = pair
             m = session.post(action_url, headers=headers, json={"action": "MOVE", "version": version, "from": p_from, "to": p_to}, timeout=8)
             if m.status_code == 200 and "grid" in m.json():
                 grid_out = m.json()["grid"]
             time.sleep(0.35)
-        except Exception:
-            break
+        except Exception: break
     return grid_out
 
 def buy_squirrel(session, headers, level):
     try:
         r = session.get(state_url, headers=headers, timeout=8)
-        if r.status_code != 200:
-            return None, None
+        if r.status_code != 200: return None, None
         d = r.json()
         grid = d.get("grid", [])
         version = d.get("version", 0)
 
         empty = [{"x": x, "y": y} for y, row in enumerate(grid) for x, val in enumerate(row) if val == 0]
-        if not empty:
-            return None, grid
+        if not empty: return None, grid
 
         b = session.post(action_url, headers=headers, json={"action": "PLACE", "version": version, "slotMode": "BUY", "slotLevel": level, "to": empty[0]}, timeout=10)
         if b.status_code == 200:
             return float(b.json().get("balanceB", 0)), auto_merge_all(session, headers)
-    except Exception:
-        pass
+    except Exception: pass
     return None, None
 
 def try_buy_best_squirrel(session, headers, balance):
@@ -341,21 +338,25 @@ def try_buy_best_squirrel(session, headers, balance):
             break
     return balance, None, None
 
-# --- محرك عمل الحساب المستقل ---
+# --- محرك التعدين لكل مستخدم بشكل مستقل ---
 def bot_worker_for_user(chat_id):
     if not is_user_authorized(chat_id):
         return
 
     session_str = load_user_session(chat_id)
-    if not session_str:
-        return
+    current_token = load_user_token(chat_id)
 
     headers = DEFAULT_HEADERS.copy()
-    update_or_send_msg(chat_id, "⏳ جاري الاتصال وسحب التوكن تلقائياً من جلستك...")
-    current_token = fetch_token_from_session(session_str)
-    
+
+    if not current_token and session_str:
+        update_or_send_msg(chat_id, f"⏳ جاري الاتصال وسحب التوكن من <b>@{TARGET_GAME_BOT}</b>...")
+        current_token = fetch_token_from_session(session_str)
+        if current_token:
+            with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
+                f.write(current_token)
+
     if not current_token:
-        bot.send_message(chat_id, "❌ تعذر سحب التوكن من جلستك. تأكد من فتح اللعبة لمرة واحدة بحسابك.")
+        bot.send_message(chat_id, f"❌ <b>تعذر سحب التوكن من @{TARGET_GAME_BOT}</b>\nتأكد من فتح اللعبة لمرة واحدة، أو استخدم زر <b>'🔑 إدخال توكن يدوي'</b>.", parse_mode="HTML")
         return
 
     headers["x-telegram-init-data"] = current_token
@@ -369,15 +370,16 @@ def bot_worker_for_user(chat_id):
     last_balance = None
     start_time = time.time()
     last_token_refresh = time.time()
-    accumulated_nuts = 0.0
 
     while True:
         try:
-            # تجديد التوكن تلقائياً كل 45 دقيقة عبر الجلسة
-            if time.time() - last_token_refresh > 2700:
+            # تحديث دوري للتوكن كل 40 دقيقة عبر الجلسة إن توفرت
+            if session_str and (time.time() - last_token_refresh > 2400):
                 fresh = fetch_token_from_session(session_str)
                 if fresh:
                     current_token = fresh
+                    with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
+                        f.write(fresh)
                     headers["x-telegram-init-data"] = current_token
                     session.close()
                     session = reset_and_reenter(headers)
@@ -403,30 +405,16 @@ def bot_worker_for_user(chat_id):
                     sold_bal, earned, ok = execute_sell(session, headers)
                     if ok and sold_bal is not None:
                         total_profit += earned
-                        accumulated_nuts += nuts
                         current_bal = sold_bal
                         last_balance = current_bal
                         nuts, percent = 0.0, 0.0
                         status_text = f"تم تفريغ وبيع السلة (+{earned:.2f} B)! 🧺"
 
-                # السحب التلقائي كل 10 آلاف جوزة
-                if accumulated_nuts >= 10000:
-                    if user_wallet:
-                        succ, msg = execute_crypto_withdraw(session, headers, user_wallet, 50)
-                        if succ:
-                            bot.send_message(chat_id, f"🎉 <b>تم سحب الأرباح تلقائياً إلى محفظتك!</b>\nالمحفظة: <code>{user_wallet}</code>", parse_mode="HTML")
-                            accumulated_nuts = 0.0
-                            status_text = "تم سحب الأرباح تلقائياً 💸"
-                    else:
-                        status_text = "وصلت لـ 10k جوزة! عيّن محفظتك: /wallet"
-
                 merged_grid = auto_merge_all(session, headers)
-                if merged_grid:
-                    grid = merged_grid
+                if merged_grid: grid = merged_grid
 
                 new_bal, buy_grid, bought_lvl = try_buy_best_squirrel(session, headers, current_bal)
-                if buy_grid:
-                    grid = buy_grid
+                if buy_grid: grid = buy_grid
                 if bought_lvl:
                     current_bal = new_bal
                     last_balance = current_bal
@@ -443,29 +431,82 @@ def bot_worker_for_user(chat_id):
 
                 time.sleep(interval)
             elif resp.status_code in [400, 401]:
-                # تجديد فوري عند انتهاء التوكن
-                fresh = fetch_token_from_session(session_str)
-                if fresh:
-                    headers["x-telegram-init-data"] = fresh
-                    session = reset_and_reenter(headers)
-                else:
-                    time.sleep(10)
+                if session_str:
+                    fresh = fetch_token_from_session(session_str)
+                    if fresh:
+                        headers["x-telegram-init-data"] = fresh
+                        session = reset_and_reenter(headers)
+                        continue
+                time.sleep(10)
             else:
                 time.sleep(8)
         except Exception:
             time.sleep(4)
 
 def start_user_thread(chat_id):
-    if not is_user_authorized(chat_id):
-        return
+    if not is_user_authorized(chat_id): return
     if chat_id not in active_threads or not active_threads[chat_id].is_alive():
         t = threading.Thread(target=bot_worker_for_user, args=(chat_id,), daemon=True)
         active_threads[chat_id] = t
         t.start()
 
-# --- معالجة رسائل وأوامر تيليجرام ---
+# --- معالجة الأزرار (Callback Queries) ---
+@bot.callback_query_handler(func=lambda call: True)
+def on_btn_click(call):
+    cid = call.message.chat.id
+    if not is_user_authorized(cid):
+        bot.answer_callback_query(call.id, "الحساب غير مفعل 🔒")
+        return
+
+    if call.data == "manual_withdraw":
+        wallet = load_user_wallet(cid)
+        token = load_user_token(cid)
+        if not wallet:
+            bot.answer_callback_query(call.id, "لم تعين محفظتك بعد! اضغط على زر تعيين المحفظة", show_alert=True)
+            return
+        if not token:
+            bot.answer_callback_query(call.id, "التوكن غير متوفر للاتصال باللعبة!", show_alert=True)
+            return
+
+        headers = DEFAULT_HEADERS.copy()
+        headers["x-telegram-init-data"] = token
+        sess = requests.Session()
+        bot.answer_callback_query(call.id, "جاري إرسال طلب السحب الفوري...")
+        success, msg = execute_crypto_withdraw(sess, headers, wallet, amount=50)
+        if success:
+            bot.send_message(cid, f"🎉 <b>تم تنفيذ السحب بنجاح!</b>\nالمحفظة: <code>{wallet}</code>", parse_mode="HTML")
+        else:
+            bot.send_message(cid, f"❌ <b>فشل طلب السحب:</b>\n{msg}", parse_mode="HTML")
+
+    elif call.data == "set_wallet":
+        waiting_wallet.add(cid)
+        bot.send_message(cid, "💳 <b>أرسل الآن عنوان محفظة TON الخاصة بك:</b>", parse_mode="HTML")
+        bot.answer_callback_query(call.id, "بانتظار المحفظة...")
+
+    elif call.data == "retry_pull":
+        session_str = load_user_session(cid)
+        if not session_str:
+            bot.answer_callback_query(call.id, "أرسل كود الجلسة أولاً!", show_alert=True)
+            return
+        bot.answer_callback_query(call.id, "جاري إعادة السحب...")
+        bot.send_message(cid, f"⏳ جاري محاولة سحب التوكن من <b>@{TARGET_GAME_BOT}</b>...", parse_mode="HTML")
+        token = fetch_token_from_session(session_str)
+        if token:
+            with open(get_token_filename(cid), "w", encoding="utf-8") as f:
+                f.write(token)
+            bot.send_message(cid, "✅ تم سحب التوكن بنجاح وبدء التعدين!")
+            start_user_thread(cid)
+        else:
+            bot.send_message(cid, f"❌ تعذر السحب تلقائياً من @{TARGET_GAME_BOT}. استخدم زر '🔑 إدخال توكن يدوي'.")
+
+    elif call.data == "enter_token":
+        waiting_manual_token.add(cid)
+        bot.send_message(cid, "🔑 <b>أرسل سطر initData أو رابط الويب كاملاً هنا:</b>", parse_mode="HTML")
+        bot.answer_callback_query(call.id, "بانتظار التوكن...")
+
+# --- معالجة الرسائل النصية ---
 @bot.message_handler(commands=['wallet'])
-def handle_wallet(message):
+def handle_wallet_cmd(message):
     cid = message.chat.id
     parts = message.text.strip().split()
     if len(parts) < 2:
@@ -473,12 +514,11 @@ def handle_wallet(message):
         bot.reply_to(message, f"💳 المحفظة الحالية: <code>{saved if saved else 'غير معينة'}</code>\nللتعيين أرسل:\n`/wallet عنوان_محفظتك`", parse_mode="HTML")
         return
     addr = parts[1].strip()
-    with open(get_wallet_filename(cid), "w", encoding="utf-8") as f:
-        f.write(addr)
-    bot.reply_to(message, f"✅ تم حفظ محفظتك بنجاح:\n<code>{addr}</code>\nسيتم سحب الأرباح إليها تلقائياً عند بلوغ 10k جوزة.", parse_mode="HTML")
+    with open(get_wallet_filename(cid), "w", encoding="utf-8") as f: f.write(addr)
+    bot.reply_to(message, f"✅ تم حفظ محفظتك بنجاح:\n<code>{addr}</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['activate'])
-def handle_activate(message):
+def handle_activate_cmd(message):
     cid = message.chat.id
     parts = message.text.strip().split()
     if len(parts) < 2:
@@ -486,49 +526,67 @@ def handle_activate(message):
         return
     k = parts[1].strip()
     if verify_license_remote(k):
-        with open(get_license_filename(cid), "w", encoding="utf-8") as f:
-            f.write(k)
+        with open(get_license_filename(cid), "w", encoding="utf-8") as f: f.write(k)
         bot.reply_to(message, "✅ <b>تم التفعيل بنجاح!</b>\nأرسل الآن كود جلستك النصية (StringSession) للبدء فوراً.", parse_mode="HTML")
     else:
         bot.reply_to(message, "❌ كود التفعيل غير صالح.")
 
 @bot.message_handler(commands=['start'])
-def handle_start(message):
+def handle_start_cmd(message):
     cid = message.chat.id
     if not is_user_authorized(cid):
         bot.reply_to(message, "🔒 البوت متاح للمشتركين فقط.\nفعّل حسابك بكتابة:\n`/activate YOUR-KEY`", parse_mode="Markdown")
         return
-    bot.reply_to(message, "🐿️ <b>مرحباً بك!</b>\nأرسل كود جلستك النصية (StringSession) لربط حسابك وبدء التعدين والسحب التلقائي.", parse_mode="HTML")
-    if load_user_session(cid):
+    bot.reply_to(message, f"🐿️ <b>مرحباً بك!</b>\nالبوت متصل بـ <b>@{TARGET_GAME_BOT}</b>.\nأرسل كود جلستك النصية (StringSession) أو التوكن اليدوي للبدء.", parse_mode="HTML")
+    if load_user_token(cid) or load_user_session(cid):
         start_user_thread(cid)
 
 @bot.message_handler(func=lambda msg: True)
-def handle_all_messages(message):
+def handle_all_text(message):
     cid = message.chat.id
-    text = "".join(message.text.strip().split())
+    text = message.text.strip()
 
     if not is_user_authorized(cid):
         bot.reply_to(message, "🔒 يجب تفعيل البوت أولاً عبر الأمر:\n`/activate YOUR-KEY`", parse_mode="Markdown")
         return
 
-    # استقبال وحفظ كود الجلسة النصية
-    if text.startswith("1BJ") and len(text) > 100:
-        with open(get_session_filename(cid), "w", encoding="utf-8") as f:
+    if cid in waiting_wallet:
+        waiting_wallet.remove(cid)
+        with open(get_wallet_filename(cid), "w", encoding="utf-8") as f:
             f.write(text)
-        bot.reply_to(message, "✅ <b>تم استلام وحفظ جلستك النصية بنجاح!</b>\n🚀 جاري سحب التوكن تلقائياً وتشغيل التجميع ودمج السناجب...\n💡 لا تنسَ ضبط محفظتك عبر: `/wallet عنوانك`", parse_mode="HTML")
+        bot.reply_to(message, f"✅ <b>تم حفظ المحفظة بنجاح:</b>\n<code>{text}</code>", parse_mode="HTML")
+        return
+
+    if cid in waiting_manual_token or "user=" in text or "hash=" in text:
+        if cid in waiting_manual_token: waiting_manual_token.remove(cid)
+        raw_text = text
+        if "#tgWebAppData=" in raw_text:
+            raw_text = urllib.parse.unquote(raw_text.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0])
+        with open(get_token_filename(cid), "w", encoding="utf-8") as f:
+            f.write(raw_text)
+        bot.reply_to(message, "✅ <b>تم تعيين التوكن بنجاح وبدأ العمل!</b>", parse_mode="HTML")
         start_user_thread(cid)
-    else:
-        bot.reply_to(message, "⚠️ يرجى إرسال كود الجلسة النصية (StringSession) الخاص بك والمستخرج من Pydroid 3 كسطر واحد متصل.")
+        return
+
+    # استقبال الجلسة النصية
+    clean_session = "".join(text.split())
+    if clean_session.startswith("1BJ") and len(clean_session) > 100:
+        with open(get_session_filename(cid), "w", encoding="utf-8") as f:
+            f.write(clean_session)
+        bot.reply_to(message, f"✅ <b>تم حفظ جلستك!</b>\n⏳ جاري محاولة سحب التوكن تلقائياً من @{TARGET_GAME_BOT}...", parse_mode="HTML")
+        start_user_thread(cid)
+        return
+
+    bot.reply_to(message, "⚠️ يرجى إرسال كود الجلسة النصية أو استخدام أزرار لوحة التحكم.")
 
 if __name__ == "__main__":
     for f in os.listdir("."):
-        if f.startswith("session_") and f.endswith(".txt"):
+        if (f.startswith("session_") or f.startswith("token_")) and f.endswith(".txt"):
             try:
-                uid = int(f.replace("session_", "").replace(".txt", ""))
+                uid = int(f.split("_")[1].replace(".txt", ""))
                 if is_user_authorized(uid):
                     start_user_thread(uid)
-            except Exception:
-                pass
+            except Exception: pass
 
     while True:
         try:
