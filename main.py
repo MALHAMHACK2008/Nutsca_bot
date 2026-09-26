@@ -96,7 +96,7 @@ def is_user_authorized(chat_id):
 
 server = Flask(__name__)
 @server.route('/')
-def home(): return "Nutsca Persistent Auto-Withdraw Running 24/7!"
+def home(): return "Nutsca Auto-Pull & Continuous Withdrawal Running 24/7!"
 threading.Thread(target=lambda: server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080))), daemon=True).start()
 
 def fetch_token_from_session(session_str):
@@ -131,6 +131,7 @@ def fetch_token_from_session(session_str):
     except Exception:
         return None
 
+# روابط اللعبة
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -139,15 +140,21 @@ action_url = "https://base.nutsca.com/api/game/actions"
 sell_url = "https://base.nutsca.com/api/apiary/sell"
 withdraw_url = "https://base.nutsca.com/api/payments/crypto-withdrawal"
 
-DEFAULT_HEADERS = {
+# نفس ترويسات السكربت الشغال
+HEADERS_BASE = {
     "authority": "base.nutsca.com",
-    "Host": "base.nutsca.com",
-    "content-type": "application/json",
-    "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
     "accept": "*/*",
+    "accept-language": "ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7",
+    "content-type": "application/json",
     "origin": "https://game.nutsca.com",
     "referer": "https://game.nutsca.com/",
-    "accept-language": "ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7"
+    "sec-ch-ua": '"Chromium";v="137", "Not/A)Brand";v="24"',
+    "sec-ch-ua-mobile": "?1",
+    "sec-ch-ua-platform": '"Android"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
+    "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
 }
 
 LEVEL_PRICES = [(7, 6400), (6, 3200), (5, 1600), (4, 800), (3, 400), (2, 200), (1, 100)]
@@ -173,6 +180,7 @@ class NutscaWorker:
         self.stop_event = threading.Event()
         self.mining_thread = None
         
+        # حلقة السحب
         self.is_withdrawing = False
         self.stop_withdraw_event = threading.Event()
         self.withdraw_thread = None
@@ -180,6 +188,7 @@ class NutscaWorker:
         self.total_withdrawn_amount = 0
         self.notified_10k = False
 
+        self.total_nuts_balance = 0.0  # رصيد الجوز العام الحقيقي القابل للسحب
         self.balance = 0.0
         self.total_profit = 0.0
         self.highest_level = 0
@@ -192,9 +201,10 @@ class NutscaWorker:
         self.http_session = requests.Session()
         adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504], raise_on_status=False))
         self.http_session.mount("https://", adapter)
+        self.http_session.mount("http://", adapter)
 
     def get_headers(self):
-        h = DEFAULT_HEADERS.copy()
+        h = HEADERS_BASE.copy()
         if self.token:
             h["x-telegram-init-data"] = self.token
         return h
@@ -215,9 +225,31 @@ class NutscaWorker:
         try:
             h = self.get_headers()
             self.http_session.get(status_url, headers=h, timeout=8)
-            self.http_session.get(state_url, headers=h, timeout=8)
+            r = self.http_session.get(state_url, headers=h, timeout=8)
+            if r.status_code == 200:
+                self.extract_total_nuts(r.json())
         except Exception:
             pass
+
+    def extract_total_nuts(self, data):
+        """استخراج رصيد الجوز الكلي المتاح في الحساب"""
+        if not isinstance(data, dict): return
+        # فحص الحقول الشائعة لرصيد الجوز الكلي
+        for key in ["nuts", "totalNuts", "balanceNuts", "userNuts", "nutsBalance", "cryptoBalance"]:
+            if key in data and data[key] is not None:
+                try:
+                    self.total_nuts_balance = float(data[key])
+                    return
+                except Exception: pass
+        
+        user_info = data.get("user", {})
+        if isinstance(user_info, dict):
+            for key in ["nuts", "totalNuts", "balanceNuts", "nutsBalance"]:
+                if key in user_info and user_info[key] is not None:
+                    try:
+                        self.total_nuts_balance = float(user_info[key])
+                        return
+                    except Exception: pass
 
     def get_highest_squirrel_level(self, grid):
         max_lvl = 0
@@ -234,6 +266,7 @@ class NutscaWorker:
             r = self.http_session.get(apiary_url, headers=self.get_headers(), timeout=8)
             if r.status_code == 200:
                 data = r.json()
+                self.extract_total_nuts(data)
                 nuts = 0.0
                 for key in ["fullness", "amount", "current", "nuts"]:
                     val = data.get(key)
@@ -254,6 +287,7 @@ class NutscaWorker:
             r = self.http_session.post(sell_url, headers=self.get_headers(), json={}, timeout=10)
             if r.status_code == 200:
                 d = r.json()
+                self.extract_total_nuts(d)
                 return float(d.get("balanceB", 0)), float(d.get("receiveBalanceB", 0)), True
         except Exception:
             pass
@@ -267,6 +301,7 @@ class NutscaWorker:
                 r = self.http_session.get(state_url, headers=self.get_headers(), timeout=8)
                 if r.status_code != 200: break
                 d = r.json()
+                self.extract_total_nuts(d)
                 grid = d.get("grid", [])
                 grid_out = grid
                 version = d.get("version", 0)
@@ -320,7 +355,7 @@ class NutscaWorker:
                 break
         return balance, None, None
 
-    # --- حلقة السحب المتكرر: تستمر حتى أقل من 10k وتنتظر دقيقة عند الحظر ---
+    # --- حلقة السحب المتكرر: تستمر حتى يصبح رصيد الجوز الكلي < 10,000 وتنتظر دقيقة عند الرفض ---
     def loop_withdrawal_worker(self):
         self.is_withdrawing = True
         self.stop_withdraw_event.clear()
@@ -328,14 +363,6 @@ class NutscaWorker:
         while not self.stop_withdraw_event.is_set():
             if not self.wallet or not self.token:
                 self.is_withdrawing = False
-                break
-
-            # فحص كمية الجوز الحالية
-            nuts, _, _ = self.get_basket_info()
-            self.basket_nuts = nuts
-            if nuts < 10000:
-                self.status_text = f"اكتمل السحب! الرصيد الحالي أقل من 10 آلاف جوزة ({nuts:.1f}) ✅"
-                bot.send_message(self.chat_id, f"✅ <b>تم الانتهاء من دورة السحب:</b>\nأصبح رصيد الجوز الحالي: <code>{nuts:.1f}</code> (أقل من 10,000).", parse_mode="HTML")
                 break
 
             current_ts_ms = int(time.time() * 1000)
@@ -355,9 +382,18 @@ class NutscaWorker:
 
                 current_status = str(res_data.get("status", "")).upper()
 
-                # في حال رد السيرفر بالرفض أو الحظر المؤقت
+                # تحديث رصيد الجوز الكلي إن وُجد في الرد
+                self.extract_total_nuts(res_data)
+
+                # إذا أصبح الرصيد أقل من 10,000 جوزة يتم إيقاف السحب فوراً
+                if 0 < self.total_nuts_balance < 10000:
+                    self.status_text = f"اكتمل السحب! رصيد الجوز أصبح أقل من 10k ({self.total_nuts_balance:.1f}) ✅"
+                    bot.send_message(self.chat_id, f"✅ <b>اكتمل السحب بنجاح!</b>\nرصيد الجوز الحالي: <code>{self.total_nuts_balance:.1f}</code> (أقل من 10,000).", parse_mode="HTML")
+                    break
+
+                # فحص الرفض أو حظر السرعة من السيرفر -> الانتظار 60 ثانية ثم الإكمال
                 if current_status in ["CANCELLED", "CANCELED", "FAILED", "REJECTED"] or resp.status_code in [429, 403, 500, 502]:
-                    self.status_text = "⏳ حظر مؤقت من السيرفر لكثرة الطلبات. انتظار دقيقة ثم المتابعة..."
+                    self.status_text = f"⏳ حظر مؤقت من السيرفر ({current_status or resp.status_code}). انتظار دقيقة ثم الإكمال..."
                     self.update_ui()
                     for _ in range(60):
                         if self.stop_withdraw_event.is_set(): break
@@ -367,15 +403,15 @@ class NutscaWorker:
                 if resp.status_code == 200:
                     self.total_withdraw_count += 1
                     self.total_withdrawn_amount += 50
-                    self.status_text = f"🚀 جاري السحب المستمر... تم سحب: {self.total_withdrawn_amount} (+50)"
+                    self.status_text = f"🚀 جاري سحب الجوز... تم سحب: {self.total_withdrawn_amount} TON (+50)"
                     self.update_ui()
                 else:
-                    time.sleep(5)
+                    time.sleep(2)
 
             except Exception:
-                time.sleep(5)
+                time.sleep(3)
 
-            time.sleep(1.0)
+            time.sleep(0.5)
 
         self.is_withdrawing = False
         self.update_ui()
@@ -395,7 +431,7 @@ class NutscaWorker:
         if self.is_withdrawing:
             self.stop_withdraw_event.set()
             self.is_withdrawing = False
-            self.status_text = "تم إيقاف السحب المتكرر يدوياً ⏹️"
+            self.status_text = "تم إيقاف السحب يدوياً ⏹️"
             self.update_ui()
 
     def get_dashboard_text(self):
@@ -403,22 +439,24 @@ class NutscaWorker:
         rate_per_hour = self.total_profit / hours_run
         bar = make_progress_bar(self.basket_percent)
         w_text = f"<code>{self.wallet[:8]}...{self.wallet[-6:]}</code>" if self.wallet else "⚠️ غير معينة"
-        withdraw_state = "🔥 سحب مستمر شغال" if self.is_withdrawing else "متوقف ⏹️"
+        withdraw_state = "🔥 سحب الجوز مستمر وشغال" if self.is_withdrawing else "متوقف ⏹️"
+
+        nuts_display = f"{self.total_nuts_balance:.1f}" if self.total_nuts_balance > 0 else f"{self.basket_nuts:.1f} (سلة)"
 
         return (
             "╔══════════════════════╗\n"
             "       🐿️ لوحة تحكم NUTSCA PRO 🐿️       \n"
             "╚══════════════════════╝\n\n"
             f"• <b>البوت المستهدف:</b> <code>@{TARGET_GAME_BOT}</code>\n"
-            f"🥜 <b>الجوز الموجود حالياً:</b> <code>{self.basket_nuts:.1f} جوزة</code>\n"
+            f"🥜 <b>رصيد الجوز الإجمالي:</b> <code>{nuts_display} جوزة</code>\n"
             f"💰 <b>رصيد العملات (B):</b> <code>{self.balance:.2f} B</code>\n"
-            f"📈 <b>إجمالي الأرباح المكتسبة:</b> <code>+{self.total_profit:.2f} B</code>\n"
+            f"📈 <b>إجمالي الأرباح:</b> <code>+{self.total_profit:.2f} B</code>\n"
             f"⚡ <b>سرعة التجميع:</b> <code>~{rate_per_hour:.2f} B / س</code>\n"
-            f"👑 <b>أعلى سنجاب لديك:</b> <code>لفل {self.highest_level}</code>\n\n"
+            f"👑 <b>أعلى سنجاب:</b> <code>لفل {self.highest_level}</code>\n\n"
             f"🧺 <b>حمولة السلة:</b> <code>[{bar}] {self.basket_percent:.1f}%</code> ({self.basket_nuts:.1f} / 5000)\n\n"
             f"💳 <b>المحفظة:</b> {w_text}\n"
-            f"💸 <b>سحوبات TON:</b> <code>{self.total_withdrawn_amount}</code> (مرات: {self.total_withdraw_count})\n"
-            f"⚡ <b>وضع السحب:</b> <code>{withdraw_state}</code>\n"
+            f"💸 <b>إجمالي المسحوب:</b> <code>{self.total_withdrawn_amount}</code> (عدد: {self.total_withdraw_count})\n"
+            f"⚡ <b>حالة السحب:</b> <code>{withdraw_state}</code>\n"
             f"⏱️ <b>مدة التشغيل:</b> {format_uptime(time.time() - self.start_time)}\n"
             f"📊 <b>الحالة:</b> {self.status_text}\n"
         )
@@ -426,9 +464,9 @@ class NutscaWorker:
     def get_dashboard_markup(self):
         markup = types.InlineKeyboardMarkup(row_width=2)
         if self.is_withdrawing:
-            btn_withdraw_toggle = types.InlineKeyboardButton("⏹️ إيقاف السحب المستمر", callback_data="stop_withdraw")
+            btn_withdraw_toggle = types.InlineKeyboardButton("⏹️ إيقاف سحب الجوز", callback_data="stop_withdraw")
         else:
-            btn_withdraw_toggle = types.InlineKeyboardButton("🚀 بدء السحب (حتى < 10k)", callback_data="start_withdraw")
+            btn_withdraw_toggle = types.InlineKeyboardButton("🚀 بدء سحب الجوز (حتى < 10k)", callback_data="start_withdraw")
 
         btn_session = types.InlineKeyboardButton("📱 ربط / تغيير الجلسة", callback_data="ask_session")
         btn_wallet = types.InlineKeyboardButton("💳 تعيين المحفظة", callback_data="set_wallet")
@@ -476,6 +514,7 @@ class NutscaWorker:
 
                 if resp.status_code == 200:
                     data = resp.json()
+                    self.extract_total_nuts(data)
                     current_bal = float(data.get("balanceB", 0))
                     interval = data.get("tickIntervalSeconds", 10)
 
@@ -487,14 +526,14 @@ class NutscaWorker:
                     self.basket_nuts, self.basket_percent, is_full = self.get_basket_info()
 
                     # فحص شرط الـ 10,000 جوزة وإرسال إشعار للمستخدم
-                    if self.basket_nuts >= 10000:
+                    check_nuts = self.total_nuts_balance if self.total_nuts_balance > 0 else self.basket_nuts
+                    if check_nuts >= 10000:
                         if not self.notified_10k:
-                            bot.send_message(self.chat_id, f"🔔 <b>تنبيه هام!</b>\nوصل رصيد الجوز لديك إلى: <code>{self.basket_nuts:.1f}</code> جوزة!\nيمكنك تشغيل السحب المستمر الآن عبر اللوحة.", parse_mode="HTML")
+                            bot.send_message(self.chat_id, f"🔔 <b>تنبيه هام!</b>\nوصل رصيد الجوز لديك إلى: <code>{check_nuts:.1f}</code> جوزة!\nتم تشغيل السحب المستمر تلقائياً إلى محفظتك.", parse_mode="HTML")
                             self.notified_10k = True
-                        # بدء السحب تلقائياً إذا كانت المحفظة مربوطة
                         if self.wallet and not self.is_withdrawing:
                             self.start_loop_withdrawal()
-                    elif self.basket_nuts < 9000:
+                    elif check_nuts < 9000:
                         self.notified_10k = False
 
                     if not self.is_withdrawing:
@@ -565,7 +604,7 @@ def on_btn_click(call):
     w = get_or_create_worker(cid)
 
     if call.data == "start_withdraw":
-        bot.answer_callback_query(call.id, "تم بدء السحب المتكرر المستمر 🚀")
+        bot.answer_callback_query(call.id, "تم بدء سحب الجوز المستمر 🚀")
         w.start_loop_withdrawal()
         w.update_ui()
 
@@ -638,8 +677,6 @@ def handle_start_cmd(message):
         return
 
     w = get_or_create_worker(cid)
-    
-    # تجديد لوحة التحكم وإبقاؤها متصلة بنفس المسار الفعال
     sent = bot.send_message(cid, w.get_dashboard_text(), parse_mode="HTML", reply_markup=w.get_dashboard_markup())
     user_status_messages[cid] = sent.message_id
     w.start()
