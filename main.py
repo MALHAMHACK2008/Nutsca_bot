@@ -29,8 +29,8 @@ GAME_APP_URL = "https://game.nutsca.com/"
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
+user_workers = {}
 user_status_messages = {}
-active_threads = {}
 waiting_wallet = set()
 waiting_manual_token = set()
 waiting_session = set()
@@ -41,7 +41,7 @@ def run_tele_loop(loop):
     loop.run_forever()
 threading.Thread(target=run_tele_loop, args=(telethon_loop,), daemon=True).start()
 
-# --- إدارة بيانات المستخدمين المستقلة ---
+# --- إدارة الملفات لكل مستخدم ---
 def get_license_filename(chat_id): return f"license_{chat_id}.txt"
 def get_session_filename(chat_id): return f"session_{chat_id}.txt"
 def get_token_filename(chat_id): return f"token_{chat_id}.txt"
@@ -94,13 +94,11 @@ def is_user_authorized(chat_id):
     k = load_user_key(chat_id)
     return verify_license_remote(k) if k else False
 
-# سيرفر إبقاء السكربت شغالاً 24/7
 server = Flask(__name__)
 @server.route('/')
-def home(): return "Nutsca GoldNuts Isolated Auto-Pull is Running 24/7!"
+def home(): return "Nutsca Persistent Auto-Withdraw Running 24/7!"
 threading.Thread(target=lambda: server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080))), daemon=True).start()
 
-# --- سحب الـ initData عبر Telethon ---
 def fetch_token_from_session(session_str):
     async def _fetch():
         clean_target = TARGET_GAME_BOT.replace("@", "").strip()
@@ -123,8 +121,7 @@ def fetch_token_from_session(session_str):
                 raw = raw_url.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0]
                 return urllib.parse.unquote(raw)
         except Exception:
-            try:
-                await client.disconnect()
+            try: await client.disconnect()
             except Exception: pass
         return None
 
@@ -134,7 +131,6 @@ def fetch_token_from_session(session_str):
     except Exception:
         return None
 
-# روابط اللعبة
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
 status_url = "https://base.nutsca.com/api/active-earn/status"
 state_url = "https://base.nutsca.com/api/game/state"
@@ -165,308 +161,400 @@ def format_uptime(seconds):
     hours, mins = divmod(mins, 60)
     return f"{hours} س و {mins} د" if hours > 0 else f"{mins} د و {sec} ث"
 
-# أزرار لوحة التحكم
-def get_dashboard_markup():
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    btn_withdraw = types.InlineKeyboardButton("💸 سحب الأرباح الآن", callback_data="manual_withdraw")
-    btn_session = types.InlineKeyboardButton("📱 ربط / تغيير الجلسة النصية", callback_data="ask_session")
-    btn_wallet = types.InlineKeyboardButton("💳 تعيين المحفظة", callback_data="set_wallet")
-    btn_retry = types.InlineKeyboardButton("🔄 إعادة سحب الجلسة", callback_data="retry_pull")
-    btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="enter_token")
-    
-    markup.add(btn_withdraw)
-    markup.add(btn_session)
-    markup.add(btn_wallet, btn_retry)
-    markup.add(btn_manual)
-    return markup
+# --- محرك الحساب المستقل ---
+class NutscaWorker:
+    def __init__(self, chat_id):
+        self.chat_id = chat_id
+        self.session_str = load_user_session(chat_id)
+        self.token = load_user_token(chat_id)
+        self.wallet = load_user_wallet(chat_id)
+        
+        self.is_running = False
+        self.stop_event = threading.Event()
+        self.mining_thread = None
+        
+        self.is_withdrawing = False
+        self.stop_withdraw_event = threading.Event()
+        self.withdraw_thread = None
+        self.total_withdraw_count = 0
+        self.total_withdrawn_amount = 0
+        self.notified_10k = False
 
-def build_dashboard_text(balance, total_profit, highest_level, basket_nuts, basket_percent, uptime_sec, wallet_addr, status_text):
-    hours_run = max(uptime_sec / 3600.0, 0.001)
-    rate_per_hour = total_profit / hours_run
-    bar = make_progress_bar(basket_percent)
-    w_text = f"<code>{wallet_addr[:8]}...{wallet_addr[-6:]}</code>" if wallet_addr else "⚠️ غير معينة"
+        self.balance = 0.0
+        self.total_profit = 0.0
+        self.highest_level = 0
+        self.basket_nuts = 0.0
+        self.basket_percent = 0.0
+        self.start_time = time.time()
+        self.last_token_refresh = time.time()
+        self.status_text = "جاري البدء والاتصال... ⚡"
 
-    return (
-        "╔══════════════════════╗\n"
-        "       🐿️ لوحة تحكم NUTSCA PRO 🐿️       \n"
-        "╚══════════════════════╝\n\n"
-        f"• <b>البوت المستهدف:</b> <code>@{TARGET_GAME_BOT}</code>\n"
-        f"💰 <b>الرصيد الحالي:</b> <code>{balance:.2f} B</code>\n"
-        f"📈 <b>إجمالي الأرباح:</b> <code>+{total_profit:.2f} B</code>\n"
-        f"⚡ <b>السرعة:</b> <code>~{rate_per_hour:.2f} B / س</code>\n"
-        f"👑 <b>أعلى سنجاب:</b> <code>لفل {highest_level}</code>\n\n"
-        f"🧺 <b>حمولة السلة:</b> <code>{basket_nuts:.1f} / 5000</code>\n"
-        f"[{bar}] {basket_percent:.1f}%\n\n"
-        f"💳 <b>المحفظة:</b> {w_text}\n"
-        f"⏱️ <b>مدة التشغيل:</b> {format_uptime(uptime_sec)}\n"
-        f"📊 <b>الحالة:</b> {status_text}\n"
-    )
+        self.http_session = requests.Session()
+        adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504], raise_on_status=False))
+        self.http_session.mount("https://", adapter)
 
-def update_or_send_msg(chat_id, text):
-    msg_id = user_status_messages.get(chat_id)
-    if msg_id:
+    def get_headers(self):
+        h = DEFAULT_HEADERS.copy()
+        if self.token:
+            h["x-telegram-init-data"] = self.token
+        return h
+
+    def refresh_token(self):
+        if not self.session_str:
+            return False
+        fresh = fetch_token_from_session(self.session_str)
+        if fresh:
+            self.token = fresh
+            with open(get_token_filename(self.chat_id), "w", encoding="utf-8") as f:
+                f.write(fresh)
+            self.last_token_refresh = time.time()
+            return True
+        return False
+
+    def reset_and_reenter(self):
         try:
-            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode="HTML", reply_markup=get_dashboard_markup())
-            return
+            h = self.get_headers()
+            self.http_session.get(status_url, headers=h, timeout=8)
+            self.http_session.get(state_url, headers=h, timeout=8)
         except Exception:
             pass
-    try:
-        sent = bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=get_dashboard_markup())
-        user_status_messages[chat_id] = sent.message_id
-    except Exception:
-        pass
 
-def reset_and_reenter(headers):
-    sess = requests.Session()
-    adapter = HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504], raise_on_status=False))
-    sess.mount("https://", adapter)
-    try:
-        sess.get(status_url, headers=headers, timeout=8)
-        sess.get(state_url, headers=headers, timeout=8)
-    except Exception:
-        pass
-    return sess
+    def get_highest_squirrel_level(self, grid):
+        max_lvl = 0
+        if isinstance(grid, list):
+            for row in grid:
+                if isinstance(row, list):
+                    for val in row:
+                        if isinstance(val, int) and val > max_lvl:
+                            max_lvl = val
+        return max_lvl
 
-def get_highest_squirrel_level(grid):
-    max_lvl = 0
-    if isinstance(grid, list):
-        for row in grid:
-            if isinstance(row, list):
-                for val in row:
-                    if isinstance(val, int) and val > max_lvl:
-                        max_lvl = val
-    return max_lvl
-
-def get_basket_info(session, headers):
-    try:
-        r = session.get(apiary_url, headers=headers, timeout=8)
-        if r.status_code == 200:
-            data = r.json()
-            nuts = 0.0
-            for key in ["fullness", "amount", "current", "nuts"]:
-                val = data.get(key)
-                if val:
-                    try:
-                        nuts = float(val)
-                        break
-                    except Exception: pass
-            return nuts, min(100.0, (nuts / 5000.0) * 100.0), data.get("isFull", False)
-    except Exception: pass
-    return 0.0, 0.0, False
-
-def execute_sell(session, headers):
-    try:
-        r = session.post(sell_url, headers=headers, json={}, timeout=10)
-        if r.status_code == 200:
-            d = r.json()
-            return float(d.get("balanceB", 0)), float(d.get("receiveBalanceB", 0)), True
-    except Exception: pass
-    return None, 0.0, False
-
-def execute_crypto_withdraw(session, headers, wallet_address, amount=50):
-    if not wallet_address:
-        return False, "المحفظة غير معينة"
-    payload = {
-        "pid": "TON_CONNECT",
-        "amount": amount,
-        "wallet": wallet_address,
-        "requestKey": f"TON_CONNECT:{amount}:{int(time.time() * 1000)}"
-    }
-    try:
-        r = session.post(withdraw_url, headers=headers, json=payload, timeout=12)
-        if r.status_code == 200:
-            res_data = r.json()
-            status = str(res_data.get("status", "")).upper()
-            if status in ["CANCELLED", "CANCELED", "FAILED", "REJECTED"]:
-                return False, f"حالة الطلب: {status}"
-            return True, "تم إرسال طلب السحب بنجاح"
-        return False, f"خطأ خادم ({r.status_code})"
-    except Exception as e:
-        return False, str(e)
-
-def auto_merge_all(session, headers):
-    grid_out = []
-    for _ in range(25):
+    def get_basket_info(self):
         try:
-            r = session.get(state_url, headers=headers, timeout=8)
-            if r.status_code != 200: break
+            r = self.http_session.get(apiary_url, headers=self.get_headers(), timeout=8)
+            if r.status_code == 200:
+                data = r.json()
+                nuts = 0.0
+                for key in ["fullness", "amount", "current", "nuts"]:
+                    val = data.get(key)
+                    if val is not None:
+                        try:
+                            nuts = float(val)
+                            break
+                        except Exception: pass
+                if nuts == 0 and isinstance(data.get("sellPreview"), dict):
+                    nuts = float(data["sellPreview"].get("amount", 0))
+                return nuts, min(100.0, (nuts / 5000.0) * 100.0), data.get("isFull", False)
+        except Exception:
+            pass
+        return 0.0, 0.0, False
+
+    def execute_sell(self):
+        try:
+            r = self.http_session.post(sell_url, headers=self.get_headers(), json={}, timeout=10)
+            if r.status_code == 200:
+                d = r.json()
+                return float(d.get("balanceB", 0)), float(d.get("receiveBalanceB", 0)), True
+        except Exception:
+            pass
+        return None, 0.0, False
+
+    def auto_merge_all(self):
+        grid_out = []
+        for _ in range(25):
+            if self.stop_event.is_set(): break
+            try:
+                r = self.http_session.get(state_url, headers=self.get_headers(), timeout=8)
+                if r.status_code != 200: break
+                d = r.json()
+                grid = d.get("grid", [])
+                grid_out = grid
+                version = d.get("version", 0)
+
+                positions = {}
+                for y, row in enumerate(grid):
+                    for x, lvl in enumerate(row):
+                        if isinstance(lvl, int) and 0 < lvl < 13:
+                            positions.setdefault(lvl, []).append({"x": x, "y": y})
+
+                pair = None
+                for lvl, pos_list in sorted(positions.items()):
+                    if len(pos_list) >= 2:
+                        pair = (pos_list[0], pos_list[1])
+                        break
+                if not pair: break
+
+                p_from, p_to = pair
+                m = self.http_session.post(action_url, headers=self.get_headers(), json={"action": "MOVE", "version": version, "from": p_from, "to": p_to}, timeout=8)
+                if m.status_code == 200 and "grid" in m.json():
+                    grid_out = m.json()["grid"]
+                time.sleep(0.35)
+            except Exception:
+                break
+        return grid_out
+
+    def buy_squirrel(self, level):
+        try:
+            r = self.http_session.get(state_url, headers=self.get_headers(), timeout=8)
+            if r.status_code != 200: return None, None
             d = r.json()
             grid = d.get("grid", [])
-            grid_out = grid
             version = d.get("version", 0)
 
-            positions = {}
-            for y, row in enumerate(grid):
-                for x, lvl in enumerate(row):
-                    if isinstance(lvl, int) and 0 < lvl < 13:
-                        positions.setdefault(lvl, []).append({"x": x, "y": y})
+            empty = [{"x": x, "y": y} for y, row in enumerate(grid) for x, val in enumerate(row) if val == 0]
+            if not empty: return None, grid
 
-            pair = None
-            for lvl, pos_list in sorted(positions.items()):
-                if len(pos_list) >= 2:
-                    pair = (pos_list[0], pos_list[1])
-                    break
-            if not pair: break
+            b = self.http_session.post(action_url, headers=self.get_headers(), json={"action": "PLACE", "version": version, "slotMode": "BUY", "slotLevel": level, "to": empty[0]}, timeout=10)
+            if b.status_code == 200:
+                return float(b.json().get("balanceB", 0)), self.auto_merge_all()
+        except Exception:
+            pass
+        return None, None
 
-            p_from, p_to = pair
-            m = session.post(action_url, headers=headers, json={"action": "MOVE", "version": version, "from": p_from, "to": p_to}, timeout=8)
-            if m.status_code == 200 and "grid" in m.json():
-                grid_out = m.json()["grid"]
-            time.sleep(0.35)
-        except Exception: break
-    return grid_out
+    def try_buy_best_squirrel(self, balance):
+        for level, price in LEVEL_PRICES:
+            if balance >= price:
+                new_bal, grid = self.buy_squirrel(level)
+                if new_bal is not None:
+                    return new_bal, grid, level
+                break
+        return balance, None, None
 
-def buy_squirrel(session, headers, level):
-    try:
-        r = session.get(state_url, headers=headers, timeout=8)
-        if r.status_code != 200: return None, None
-        d = r.json()
-        grid = d.get("grid", [])
-        version = d.get("version", 0)
+    # --- حلقة السحب المتكرر: تستمر حتى أقل من 10k وتنتظر دقيقة عند الحظر ---
+    def loop_withdrawal_worker(self):
+        self.is_withdrawing = True
+        self.stop_withdraw_event.clear()
 
-        empty = [{"x": x, "y": y} for y, row in enumerate(grid) for x, val in enumerate(row) if val == 0]
-        if not empty: return None, grid
+        while not self.stop_withdraw_event.is_set():
+            if not self.wallet or not self.token:
+                self.is_withdrawing = False
+                break
 
-        b = session.post(action_url, headers=headers, json={"action": "PLACE", "version": version, "slotMode": "BUY", "slotLevel": level, "to": empty[0]}, timeout=10)
-        if b.status_code == 200:
-            return float(b.json().get("balanceB", 0)), auto_merge_all(session, headers)
-    except Exception: pass
-    return None, None
+            # فحص كمية الجوز الحالية
+            nuts, _, _ = self.get_basket_info()
+            self.basket_nuts = nuts
+            if nuts < 10000:
+                self.status_text = f"اكتمل السحب! الرصيد الحالي أقل من 10 آلاف جوزة ({nuts:.1f}) ✅"
+                bot.send_message(self.chat_id, f"✅ <b>تم الانتهاء من دورة السحب:</b>\nأصبح رصيد الجوز الحالي: <code>{nuts:.1f}</code> (أقل من 10,000).", parse_mode="HTML")
+                break
 
-def try_buy_best_squirrel(session, headers, balance):
-    for level, price in LEVEL_PRICES:
-        if balance >= price:
-            new_bal, grid = buy_squirrel(session, headers, level)
-            if new_bal is not None:
-                return new_bal, grid, level
-            break
-    return balance, None, None
+            current_ts_ms = int(time.time() * 1000)
+            payload = {
+                "pid": "TON_CONNECT",
+                "amount": 50,
+                "wallet": self.wallet,
+                "requestKey": f"TON_CONNECT:50:{current_ts_ms}"
+            }
 
-# --- محرك التعدين لكل مستخدم ---
-def bot_worker_for_user(chat_id):
-    if not is_user_authorized(chat_id):
-        return
+            try:
+                resp = self.http_session.post(withdraw_url, headers=self.get_headers(), json=payload, timeout=12)
+                try:
+                    res_data = resp.json()
+                except Exception:
+                    res_data = {}
 
-    session_str = load_user_session(chat_id)
-    current_token = load_user_token(chat_id)
+                current_status = str(res_data.get("status", "")).upper()
 
-    headers = DEFAULT_HEADERS.copy()
-
-    if not current_token and session_str:
-        update_or_send_msg(chat_id, f"⏳ جاري الاتصال وسحب التوكن من <b>@{TARGET_GAME_BOT}</b>...")
-        current_token = fetch_token_from_session(session_str)
-        if current_token:
-            with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
-                f.write(current_token)
-
-    if not current_token:
-        bot.send_message(chat_id, f"❌ <b>تعذر سحب التوكن من @{TARGET_GAME_BOT}</b>\nاضغط على <b>'📱 ربط / تغيير الجلسة النصية'</b> لإعادة إرسال كود الجلسة أو استخدم <b>'🔑 إدخال توكن يدوي'</b>.", parse_mode="HTML")
-        return
-
-    headers["x-telegram-init-data"] = current_token
-    session = reset_and_reenter(headers)
-    grid = auto_merge_all(session, headers)
-
-    highest_lvl = get_highest_squirrel_level(grid)
-    nuts, percent, _ = get_basket_info(session, headers)
-
-    total_profit = 0.0
-    last_balance = None
-    start_time = time.time()
-    last_token_refresh = time.time()
-
-    while True:
-        try:
-            # إعادة سحب التوكن من الجلسة في حال تم تحديثها
-            new_session_check = load_user_session(chat_id)
-            if new_session_check and new_session_check != session_str:
-                session_str = new_session_check
-                fresh = fetch_token_from_session(session_str)
-                if fresh:
-                    current_token = fresh
-                    with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
-                        f.write(fresh)
-                    headers["x-telegram-init-data"] = current_token
-                    session.close()
-                    session = reset_and_reenter(headers)
-
-            if session_str and (time.time() - last_token_refresh > 2400):
-                fresh = fetch_token_from_session(session_str)
-                if fresh:
-                    current_token = fresh
-                    with open(get_token_filename(chat_id), "w", encoding="utf-8") as f:
-                        f.write(fresh)
-                    headers["x-telegram-init-data"] = current_token
-                    session.close()
-                    session = reset_and_reenter(headers)
-                last_token_refresh = time.time()
-
-            uptime = time.time() - start_time
-            user_wallet = load_user_wallet(chat_id)
-            resp = session.post(tick_url, headers=headers, json={}, timeout=12)
-
-            if resp.status_code == 200:
-                data = resp.json()
-                current_bal = float(data.get("balanceB", 0))
-                interval = data.get("tickIntervalSeconds", 10)
-
-                if last_balance is not None and current_bal > last_balance:
-                    total_profit += (current_bal - last_balance)
-                last_balance = current_bal
-
-                nuts, percent, is_full = get_basket_info(session, headers)
-                status_text = "تجميع التكات جاري... ⚡"
-
-                if nuts >= 5000 or is_full:
-                    sold_bal, earned, ok = execute_sell(session, headers)
-                    if ok and sold_bal is not None:
-                        total_profit += earned
-                        current_bal = sold_bal
-                        last_balance = current_bal
-                        nuts, percent = 0.0, 0.0
-                        status_text = f"تم تفريغ وبيع السلة (+{earned:.2f} B)! 🧺"
-
-                merged_grid = auto_merge_all(session, headers)
-                if merged_grid: grid = merged_grid
-
-                new_bal, buy_grid, bought_lvl = try_buy_best_squirrel(session, headers, current_bal)
-                if buy_grid: grid = buy_grid
-                if bought_lvl:
-                    current_bal = new_bal
-                    last_balance = current_bal
-                    status_text = f"تم شراء سنجاب لفل {bought_lvl} ودمجه! 🐿️"
-
-                highest_lvl = get_highest_squirrel_level(grid)
-                update_or_send_msg(chat_id, build_dashboard_text(current_bal, total_profit, highest_lvl, nuts, percent, uptime, user_wallet, status_text))
-
-                if data.get("sessionSeconds", 0) >= 268:
-                    session.close()
-                    time.sleep(60)
-                    session = reset_and_reenter(headers)
+                # في حال رد السيرفر بالرفض أو الحظر المؤقت
+                if current_status in ["CANCELLED", "CANCELED", "FAILED", "REJECTED"] or resp.status_code in [429, 403, 500, 502]:
+                    self.status_text = "⏳ حظر مؤقت من السيرفر لكثرة الطلبات. انتظار دقيقة ثم المتابعة..."
+                    self.update_ui()
+                    for _ in range(60):
+                        if self.stop_withdraw_event.is_set(): break
+                        time.sleep(1)
                     continue
 
-                time.sleep(interval)
-            elif resp.status_code in [400, 401]:
-                if session_str:
-                    fresh = fetch_token_from_session(session_str)
-                    if fresh:
-                        headers["x-telegram-init-data"] = fresh
-                        session = reset_and_reenter(headers)
-                        continue
-                time.sleep(10)
-            else:
-                time.sleep(8)
+                if resp.status_code == 200:
+                    self.total_withdraw_count += 1
+                    self.total_withdrawn_amount += 50
+                    self.status_text = f"🚀 جاري السحب المستمر... تم سحب: {self.total_withdrawn_amount} (+50)"
+                    self.update_ui()
+                else:
+                    time.sleep(5)
+
+            except Exception:
+                time.sleep(5)
+
+            time.sleep(1.0)
+
+        self.is_withdrawing = False
+        self.update_ui()
+
+    def start_loop_withdrawal(self):
+        if not self.wallet:
+            bot.send_message(self.chat_id, "⚠️ لم تقم بتعيين محفظتك بعد! اضغط على <b>💳 تعيين المحفظة</b> أولاً.", parse_mode="HTML")
+            return
+        if not self.token:
+            bot.send_message(self.chat_id, "⚠️ التوكن غير متوفر للاتصال باللعبة!", parse_mode="HTML")
+            return
+        if not self.is_withdrawing:
+            self.withdraw_thread = threading.Thread(target=self.loop_withdrawal_worker, daemon=True)
+            self.withdraw_thread.start()
+
+    def stop_loop_withdrawal(self):
+        if self.is_withdrawing:
+            self.stop_withdraw_event.set()
+            self.is_withdrawing = False
+            self.status_text = "تم إيقاف السحب المتكرر يدوياً ⏹️"
+            self.update_ui()
+
+    def get_dashboard_text(self):
+        hours_run = max((time.time() - self.start_time) / 3600.0, 0.001)
+        rate_per_hour = self.total_profit / hours_run
+        bar = make_progress_bar(self.basket_percent)
+        w_text = f"<code>{self.wallet[:8]}...{self.wallet[-6:]}</code>" if self.wallet else "⚠️ غير معينة"
+        withdraw_state = "🔥 سحب مستمر شغال" if self.is_withdrawing else "متوقف ⏹️"
+
+        return (
+            "╔══════════════════════╗\n"
+            "       🐿️ لوحة تحكم NUTSCA PRO 🐿️       \n"
+            "╚══════════════════════╝\n\n"
+            f"• <b>البوت المستهدف:</b> <code>@{TARGET_GAME_BOT}</code>\n"
+            f"🥜 <b>الجوز الموجود حالياً:</b> <code>{self.basket_nuts:.1f} جوزة</code>\n"
+            f"💰 <b>رصيد العملات (B):</b> <code>{self.balance:.2f} B</code>\n"
+            f"📈 <b>إجمالي الأرباح المكتسبة:</b> <code>+{self.total_profit:.2f} B</code>\n"
+            f"⚡ <b>سرعة التجميع:</b> <code>~{rate_per_hour:.2f} B / س</code>\n"
+            f"👑 <b>أعلى سنجاب لديك:</b> <code>لفل {self.highest_level}</code>\n\n"
+            f"🧺 <b>حمولة السلة:</b> <code>[{bar}] {self.basket_percent:.1f}%</code> ({self.basket_nuts:.1f} / 5000)\n\n"
+            f"💳 <b>المحفظة:</b> {w_text}\n"
+            f"💸 <b>سحوبات TON:</b> <code>{self.total_withdrawn_amount}</code> (مرات: {self.total_withdraw_count})\n"
+            f"⚡ <b>وضع السحب:</b> <code>{withdraw_state}</code>\n"
+            f"⏱️ <b>مدة التشغيل:</b> {format_uptime(time.time() - self.start_time)}\n"
+            f"📊 <b>الحالة:</b> {self.status_text}\n"
+        )
+
+    def get_dashboard_markup(self):
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        if self.is_withdrawing:
+            btn_withdraw_toggle = types.InlineKeyboardButton("⏹️ إيقاف السحب المستمر", callback_data="stop_withdraw")
+        else:
+            btn_withdraw_toggle = types.InlineKeyboardButton("🚀 بدء السحب (حتى < 10k)", callback_data="start_withdraw")
+
+        btn_session = types.InlineKeyboardButton("📱 ربط / تغيير الجلسة", callback_data="ask_session")
+        btn_wallet = types.InlineKeyboardButton("💳 تعيين المحفظة", callback_data="set_wallet")
+        btn_retry = types.InlineKeyboardButton("🔄 تحديث التوكن", callback_data="retry_pull")
+        btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="enter_token")
+        
+        markup.add(btn_withdraw_toggle)
+        markup.add(btn_session, btn_wallet)
+        markup.add(btn_retry, btn_manual)
+        return markup
+
+    def update_ui(self):
+        msg_id = user_status_messages.get(self.chat_id)
+        if not msg_id: return
+        try:
+            bot.edit_message_text(self.get_dashboard_text(), self.chat_id, msg_id, parse_mode="HTML", reply_markup=self.get_dashboard_markup())
         except Exception:
-            time.sleep(4)
+            pass
 
-def start_user_thread(chat_id):
-    if not is_user_authorized(chat_id): return
-    if chat_id not in active_threads or not active_threads[chat_id].is_alive():
-        t = threading.Thread(target=bot_worker_for_user, args=(chat_id,), daemon=True)
-        active_threads[chat_id] = t
-        t.start()
+    def run_loop(self):
+        if not self.token and self.session_str:
+            self.refresh_token()
 
-# --- معالجة الضغط على الأزرار ---
+        if not self.token:
+            self.status_text = "بانتظار ربط الجلسة أو إدخال التوكن..."
+            self.update_ui()
+            return
+
+        self.reset_and_reenter()
+        grid = self.auto_merge_all()
+        self.highest_level = self.get_highest_squirrel_level(grid)
+        self.basket_nuts, self.basket_percent, _ = self.get_basket_info()
+        self.update_ui()
+
+        last_balance = None
+
+        while not self.stop_event.is_set():
+            try:
+                if self.session_str and (time.time() - self.last_token_refresh > 2400):
+                    if self.refresh_token():
+                        self.http_session.close()
+                        self.reset_and_reenter()
+
+                resp = self.http_session.post(tick_url, headers=self.get_headers(), json={}, timeout=12)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    current_bal = float(data.get("balanceB", 0))
+                    interval = data.get("tickIntervalSeconds", 10)
+
+                    if last_balance is not None and current_bal > last_balance:
+                        self.total_profit += (current_bal - last_balance)
+                    last_balance = current_bal
+                    self.balance = current_bal
+
+                    self.basket_nuts, self.basket_percent, is_full = self.get_basket_info()
+
+                    # فحص شرط الـ 10,000 جوزة وإرسال إشعار للمستخدم
+                    if self.basket_nuts >= 10000:
+                        if not self.notified_10k:
+                            bot.send_message(self.chat_id, f"🔔 <b>تنبيه هام!</b>\nوصل رصيد الجوز لديك إلى: <code>{self.basket_nuts:.1f}</code> جوزة!\nيمكنك تشغيل السحب المستمر الآن عبر اللوحة.", parse_mode="HTML")
+                            self.notified_10k = True
+                        # بدء السحب تلقائياً إذا كانت المحفظة مربوطة
+                        if self.wallet and not self.is_withdrawing:
+                            self.start_loop_withdrawal()
+                    elif self.basket_nuts < 9000:
+                        self.notified_10k = False
+
+                    if not self.is_withdrawing:
+                        self.status_text = "تجميع التكات وشراء السناجب جاري... ⚡"
+
+                    if self.basket_nuts >= 5000 or is_full:
+                        sold_bal, earned, ok = self.execute_sell()
+                        if ok and sold_bal is not None:
+                            self.total_profit += earned
+                            self.balance = sold_bal
+                            last_balance = self.balance
+                            self.basket_nuts, self.basket_percent = 0.0, 0.0
+                            if not self.is_withdrawing:
+                                self.status_text = f"تم تفريغ وبيع السلة (+{earned:.2f} B)! 🧺"
+
+                    merged = self.auto_merge_all()
+                    if merged: grid = merged
+
+                    new_bal, buy_grid, bought_lvl = self.try_buy_best_squirrel(self.balance)
+                    if buy_grid: grid = buy_grid
+                    if bought_lvl:
+                        self.balance = new_bal
+                        last_balance = self.balance
+                        if not self.is_withdrawing:
+                            self.status_text = f"تم شراء سنجاب لفل {bought_lvl} ودمجه! 🐿️"
+
+                    self.highest_level = self.get_highest_squirrel_level(grid)
+                    self.update_ui()
+
+                    if data.get("sessionSeconds", 0) >= 268:
+                        self.http_session.close()
+                        time.sleep(60)
+                        self.reset_and_reenter()
+                        continue
+
+                    time.sleep(interval)
+
+                elif resp.status_code in [400, 401]:
+                    if self.session_str and self.refresh_token():
+                        self.reset_and_reenter()
+                        continue
+                    time.sleep(10)
+                else:
+                    time.sleep(8)
+            except Exception:
+                time.sleep(4)
+
+    def start(self):
+        if not self.is_running:
+            self.is_running = True
+            self.stop_event.clear()
+            self.mining_thread = threading.Thread(target=self.run_loop, daemon=True)
+            self.mining_thread.start()
+
+def get_or_create_worker(chat_id):
+    if chat_id not in user_workers:
+        user_workers[chat_id] = NutscaWorker(chat_id)
+    return user_workers[chat_id]
+
+# --- معالجة الأزرار التفاعلية ---
 @bot.callback_query_handler(func=lambda call: True)
 def on_btn_click(call):
     cid = call.message.chat.id
@@ -474,30 +562,21 @@ def on_btn_click(call):
         bot.answer_callback_query(call.id, "الحساب غير مفعل 🔒")
         return
 
-    if call.data == "ask_session":
+    w = get_or_create_worker(cid)
+
+    if call.data == "start_withdraw":
+        bot.answer_callback_query(call.id, "تم بدء السحب المتكرر المستمر 🚀")
+        w.start_loop_withdrawal()
+        w.update_ui()
+
+    elif call.data == "stop_withdraw":
+        bot.answer_callback_query(call.id, "تم إيقاف السحب 🛑")
+        w.stop_loop_withdrawal()
+
+    elif call.data == "ask_session":
         waiting_session.add(cid)
-        bot.send_message(cid, "📱 <b>أرسل الآن كود الجلسة النصية (StringSession) الخاص بحسابك:</b>\n(المستخرج كسطر واحد من Pydroid 3)", parse_mode="HTML")
+        bot.send_message(cid, "📱 <b>أرسل الآن كود الجلسة النصية (StringSession) الخاص بحسابك:</b>\n(المستخرج من Pydroid 3)", parse_mode="HTML")
         bot.answer_callback_query(call.id, "بانتظار كود الجلسة...")
-
-    elif call.data == "manual_withdraw":
-        wallet = load_user_wallet(cid)
-        token = load_user_token(cid)
-        if not wallet:
-            bot.answer_callback_query(call.id, "لم تعين محفظتك بعد! اضغط على زر تعيين المحفظة", show_alert=True)
-            return
-        if not token:
-            bot.answer_callback_query(call.id, "التوكن غير متوفر للاتصال باللعبة!", show_alert=True)
-            return
-
-        headers = DEFAULT_HEADERS.copy()
-        headers["x-telegram-init-data"] = token
-        sess = requests.Session()
-        bot.answer_callback_query(call.id, "جاري إرسال طلب السحب الفوري...")
-        success, msg = execute_crypto_withdraw(sess, headers, wallet, amount=50)
-        if success:
-            bot.send_message(cid, f"🎉 <b>تم تنفيذ السحب بنجاح!</b>\nالمحفظة: <code>{wallet}</code>", parse_mode="HTML")
-        else:
-            bot.send_message(cid, f"❌ <b>فشل طلب السحب:</b>\n{msg}", parse_mode="HTML")
 
     elif call.data == "set_wallet":
         waiting_wallet.add(cid)
@@ -505,38 +584,37 @@ def on_btn_click(call):
         bot.answer_callback_query(call.id, "بانتظار المحفظة...")
 
     elif call.data == "retry_pull":
-        session_str = load_user_session(cid)
-        if not session_str:
+        if not w.session_str:
             bot.answer_callback_query(call.id, "أرسل كود الجلسة أولاً!", show_alert=True)
             return
         bot.answer_callback_query(call.id, "جاري إعادة السحب...")
         bot.send_message(cid, f"⏳ جاري محاولة سحب التوكن من <b>@{TARGET_GAME_BOT}</b>...", parse_mode="HTML")
-        token = fetch_token_from_session(session_str)
-        if token:
-            with open(get_token_filename(cid), "w", encoding="utf-8") as f:
-                f.write(token)
+        if w.refresh_token():
             bot.send_message(cid, "✅ تم سحب التوكن بنجاح وبدء التعدين!")
-            start_user_thread(cid)
+            w.start()
         else:
-            bot.send_message(cid, f"❌ تعذر السحب تلقائياً من @{TARGET_GAME_BOT}. تأكد من فتح اللعبة أولاً أو استخدم '🔑 إدخال توكن يدوي'.")
+            bot.send_message(cid, f"❌ تعذر السحب تلقائياً من @{TARGET_GAME_BOT}. استخدم زر '🔑 إدخال توكن يدوي'.")
 
     elif call.data == "enter_token":
         waiting_manual_token.add(cid)
         bot.send_message(cid, "🔑 <b>أرسل سطر initData أو رابط الويب كاملاً هنا:</b>", parse_mode="HTML")
         bot.answer_callback_query(call.id, "بانتظار التوكن...")
 
-# --- معالجة الرسائل والأوامر ---
+# --- الأوامر والرسائل النصية ---
 @bot.message_handler(commands=['wallet'])
 def handle_wallet_cmd(message):
     cid = message.chat.id
     parts = message.text.strip().split()
+    w = get_or_create_worker(cid)
     if len(parts) < 2:
-        saved = load_user_wallet(cid)
+        saved = w.wallet
         bot.reply_to(message, f"💳 المحفظة الحالية: <code>{saved if saved else 'غير معينة'}</code>\nللتعيين أرسل:\n`/wallet عنوان_محفظتك`", parse_mode="HTML")
         return
     addr = parts[1].strip()
+    w.wallet = addr
     with open(get_wallet_filename(cid), "w", encoding="utf-8") as f: f.write(addr)
     bot.reply_to(message, f"✅ تم حفظ محفظتك بنجاح:\n<code>{addr}</code>", parse_mode="HTML")
+    w.update_ui()
 
 @bot.message_handler(commands=['activate'])
 def handle_activate_cmd(message):
@@ -548,7 +626,7 @@ def handle_activate_cmd(message):
     k = parts[1].strip()
     if verify_license_remote(k):
         with open(get_license_filename(cid), "w", encoding="utf-8") as f: f.write(k)
-        bot.reply_to(message, "✅ <b>تم التفعيل بنجاح!</b>\nاضغط الآن على <b>'📱 ربط / تغيير الجلسة النصية'</b> أو أرسل كود الجلسة مباشرة للبدء.", parse_mode="HTML", reply_markup=get_dashboard_markup())
+        bot.reply_to(message, "✅ <b>تم التفعيل بنجاح!</b>\nأرسل الآن كود جلستك النصية أو استخدم الأزرار للبدء.", parse_mode="HTML")
     else:
         bot.reply_to(message, "❌ كود التفعيل غير صالح.")
 
@@ -558,9 +636,13 @@ def handle_start_cmd(message):
     if not is_user_authorized(cid):
         bot.reply_to(message, "🔒 البوت متاح للمشتركين فقط.\nفعّل حسابك بكتابة:\n`/activate YOUR-KEY`", parse_mode="Markdown")
         return
-    bot.reply_to(message, f"🐿️ <b>مرحباً بك في بوت NUTSCA!</b>\nاستخدم الأزرار في الأسفل للتحكم بربط الجلسة، تعيين المحفظة، أو السحب الفوري.", parse_mode="HTML", reply_markup=get_dashboard_markup())
-    if load_user_token(cid) or load_user_session(cid):
-        start_user_thread(cid)
+
+    w = get_or_create_worker(cid)
+    
+    # تجديد لوحة التحكم وإبقاؤها متصلة بنفس المسار الفعال
+    sent = bot.send_message(cid, w.get_dashboard_text(), parse_mode="HTML", reply_markup=w.get_dashboard_markup())
+    user_status_messages[cid] = sent.message_id
+    w.start()
 
 @bot.message_handler(func=lambda msg: True)
 def handle_all_text(message):
@@ -571,12 +653,16 @@ def handle_all_text(message):
         bot.reply_to(message, "🔒 يجب تفعيل البوت أولاً عبر الأمر:\n`/activate YOUR-KEY`", parse_mode="Markdown")
         return
 
+    w = get_or_create_worker(cid)
+
     # حفظ المحفظة
     if cid in waiting_wallet:
         waiting_wallet.remove(cid)
+        w.wallet = text
         with open(get_wallet_filename(cid), "w", encoding="utf-8") as f:
             f.write(text)
         bot.reply_to(message, f"✅ <b>تم حفظ المحفظة بنجاح:</b>\n<code>{text}</code>", parse_mode="HTML")
+        w.update_ui()
         return
 
     # حفظ التوكن اليدوي
@@ -585,23 +671,28 @@ def handle_all_text(message):
         raw_text = text
         if "#tgWebAppData=" in raw_text:
             raw_text = urllib.parse.unquote(raw_text.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0])
+        w.token = raw_text
         with open(get_token_filename(cid), "w", encoding="utf-8") as f:
             f.write(raw_text)
         bot.reply_to(message, "✅ <b>تم تعيين التوكن بنجاح وبدأ العمل!</b>", parse_mode="HTML")
-        start_user_thread(cid)
+        w.start()
+        w.update_ui()
         return
 
     # استقبال وحفظ الجلسة النصية
     clean_session = "".join(text.split())
     if cid in waiting_session or (clean_session.startswith("1BJ") and len(clean_session) > 100):
         if cid in waiting_session: waiting_session.remove(cid)
+        w.session_str = clean_session
         with open(get_session_filename(cid), "w", encoding="utf-8") as f:
             f.write(clean_session)
         bot.reply_to(message, f"✅ <b>تم حفظ جلستك بنجاح!</b>\n⏳ جاري محاولة سحب التوكن تلقائياً من @{TARGET_GAME_BOT}...", parse_mode="HTML")
-        start_user_thread(cid)
+        if w.refresh_token():
+            w.start()
+            w.update_ui()
         return
 
-    bot.reply_to(message, "⚠️ استخدم أزرار التحكم أدناه أو أرسل كود الجلسة بشكل صحيح.", reply_markup=get_dashboard_markup())
+    bot.reply_to(message, "⚠️ استخدم لوحة التحكم المرفقة أو الأزرار التفاعلية.", reply_markup=w.get_dashboard_markup())
 
 if __name__ == "__main__":
     for f in os.listdir("."):
@@ -609,7 +700,8 @@ if __name__ == "__main__":
             try:
                 uid = int(f.split("_")[1].replace(".txt", ""))
                 if is_user_authorized(uid):
-                    start_user_thread(uid)
+                    w = get_or_create_worker(uid)
+                    w.start()
             except Exception: pass
 
     while True:
