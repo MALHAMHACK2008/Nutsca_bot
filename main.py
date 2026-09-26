@@ -179,7 +179,7 @@ class NutscaWorker:
         self.total_withdrawn_amount = 0
         self.notified_10k = False
 
-        self.total_nuts_balance = 0.0  # رصيد الجوز العام
+        self.total_nuts_balance = 0.0
         self.balance = 0.0
         self.total_profit = 0.0
         self.highest_level = 0
@@ -223,7 +223,6 @@ class NutscaWorker:
             pass
 
     def extract_total_nuts(self, data):
-        """استخراج رصيد الجوز الكلي العام من استجابات السيرفر"""
         if not isinstance(data, dict): return
         for key in ["nuts", "totalNuts", "balanceNuts", "userNuts", "nutsBalance"]:
             if key in data and data[key] is not None:
@@ -251,7 +250,6 @@ class NutscaWorker:
         return max_lvl
 
     def get_basket_info(self):
-        """خاص فقط بسلة التفريغ المحددة بـ 5000 جوزة"""
         try:
             r = self.http_session.get(apiary_url, headers=self.get_headers(), timeout=8)
             if r.status_code == 200:
@@ -326,12 +324,39 @@ class NutscaWorker:
             grid = d.get("grid", [])
             version = d.get("version", 0)
 
-            empty = [{"x": x, "y": y} for y, row in enumerate(grid) for x, val in enumerate(row) if val == 0]
-            if not empty: return None, grid
+            empty_slots = []
+            counts_by_level = {}
 
-            b = self.http_session.post(action_url, headers=self.get_headers(), json={"action": "PLACE", "version": version, "slotMode": "BUY", "slotLevel": level, "to": empty[0]}, timeout=10)
+            for y_idx, row in enumerate(grid):
+                for x_idx, val in enumerate(row):
+                    if val == 0:
+                        empty_slots.append({"x": x_idx, "y": y_idx})
+                    elif isinstance(val, int) and val > 0:
+                        counts_by_level[val] = counts_by_level.get(val, 0) + 1
+
+            free_slots_count = len(empty_slots)
+            if free_slots_count == 0:
+                return None, grid
+
+            # شرط الحماية: قبل خانتين فارغتين أو أقل، لا يتم الشراء إلا بوجود شبيه لدمجه فوراً
+            has_matching = counts_by_level.get(level, 0) > 0
+            if free_slots_count <= 2 and not has_matching:
+                return None, grid
+
+            target_slot = empty_slots[0]
+            payload = {
+                "action": "PLACE",
+                "version": version,
+                "slotMode": "BUY",
+                "slotLevel": level,
+                "to": target_slot
+            }
+
+            b = self.http_session.post(action_url, headers=self.get_headers(), json=payload, timeout=10)
             if b.status_code == 200:
-                return float(b.json().get("balanceB", 0)), self.auto_merge_all()
+                new_balance = b.json().get("balanceB", 0)
+                latest_grid = self.auto_merge_all()
+                return float(new_balance), latest_grid
         except Exception:
             pass
         return None, None
@@ -345,7 +370,6 @@ class NutscaWorker:
                 break
         return balance, None, None
 
-    # --- حلقة السحب المستمر للجوز (حتى ينزل رصيد الجوز العام تحت 10k) ---
     def loop_withdrawal_worker(self):
         self.is_withdrawing = True
         self.stop_withdraw_event.clear()
@@ -372,7 +396,6 @@ class NutscaWorker:
                 self.is_withdrawing = False
                 break
 
-            # فحص رصيد الجوز الكلي العام
             if 0 < self.total_nuts_balance < 10000:
                 self.status_text = f"اكتمل السحب! رصيد الجوز أصبح أقل من 10k ({self.total_nuts_balance:.1f}) ✅"
                 bot.send_message(self.chat_id, f"✅ <b>تم الانتهاء من دورة السحب:</b>\nأصبح رصيد الجوز الحالي: <code>{self.total_nuts_balance:.1f}</code> (أقل من 10,000).", parse_mode="HTML")
@@ -396,7 +419,6 @@ class NutscaWorker:
                 current_status = str(res_data.get("status", "")).upper()
                 self.extract_total_nuts(res_data)
 
-                # عند الرفض أو حظر السرعة من السيرفر: انتظار دقيقة ثم المواصلة
                 if current_status in ["CANCELLED", "CANCELED", "FAILED", "REJECTED"] or resp.status_code in [429, 403, 500, 502]:
                     self.status_text = f"⏳ حظر مؤقت من السيرفر ({current_status or resp.status_code}). انتظار دقيقة ثم المتابعة..."
                     self.update_ui()
@@ -571,6 +593,7 @@ class NutscaWorker:
                     self.highest_level = self.get_highest_squirrel_level(grid)
                     self.update_ui()
 
+                    # دورة الـ 4:30 دقيقة (268 ثانية)
                     if data.get("sessionSeconds", 0) >= 268:
                         self.http_session.close()
                         time.sleep(60)
