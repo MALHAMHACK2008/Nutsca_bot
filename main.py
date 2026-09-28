@@ -18,7 +18,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
 
 # --- إعدادات البوت والتحقق ---
-TELEGRAM_BOT_TOKEN = "8681823633:AAHHMpS4mOIiRf0sNo2MK2ZG7CDoTxEvzp8"
+TELEGRAM_BOT_TOKEN = "8681823633:AAGPEFeib4YEEW6fiim48O9WlPXiNVo-ozo"
 GITHUB_LICENSES_URL = "https://raw.githubusercontent.com/MALHAMHACK2008/Nutsca_bot/refs/heads/main/licenses.json"
 
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 36791169))
