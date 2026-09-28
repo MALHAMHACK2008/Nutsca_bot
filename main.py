@@ -17,7 +17,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
 
-# --- إعدادات البوت والتحقق ---
+# --- إعدادات البوت والتحقق ---7
 TELEGRAM_BOT_TOKEN = "8681823633:AAGPEFeib4YEEW6fiim48O9WlPXiNVo-ozo"
 GITHUB_LICENSES_URL = "https://raw.githubusercontent.com/MALHAMHACK2008/Nutsca_bot/refs/heads/main/licenses.json"
 
