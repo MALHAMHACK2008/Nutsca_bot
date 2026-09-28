@@ -7,7 +7,7 @@ import requests
 import telebot
 
 # --- إعدادات البوت وتيليجرام ---
-TELEGRAM_BOT_TOKEN = "8681823633:AAHTWPwD-kado7dG265IO7s7sN54WhWXSv0"
+TELEGRAM_BOT_TOKEN = "8681823633:AAGPEFeib4YEEW6fiim48O9WlPXiNVo-ozo"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 user_status_messages = {}
