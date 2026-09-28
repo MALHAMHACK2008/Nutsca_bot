@@ -6,7 +6,6 @@ import uuid
 import logging
 import asyncio
 import threading
-import urllib.parse
 from flask import Flask
 import requests
 from requests.adapters import HTTPAdapter
@@ -106,7 +105,6 @@ def fetch_token_from_session(session_str):
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                print("Session is unauthorized or revoked!")
                 await client.disconnect()
                 return None
             bot_entity = await client.get_input_entity(clean_target)
@@ -118,11 +116,15 @@ def fetch_token_from_session(session_str):
             ))
             raw_url = web_view.url
             await client.disconnect()
+            
+            # الإصلاح الجذري: سحب التوكن المشفر كما هو دون فك تشفيره
             if "#tgWebAppData=" in raw_url:
-                raw = raw_url.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0]
-                return urllib.parse.unquote(raw)
+                raw = raw_url.split("#tgWebAppData=")[1]
+                if "&tgWebApp" in raw:
+                    raw = raw.split("&tgWebApp")[0]
+                return raw
         except Exception as e:
-            print(f"Telethon Error: {e}")
+            print(f"Fetch Error: {e}")
             try: await client.disconnect()
             except Exception: pass
         return None
@@ -130,8 +132,7 @@ def fetch_token_from_session(session_str):
     try:
         future = asyncio.run_coroutine_threadsafe(_fetch(), telethon_loop)
         return future.result(timeout=35.0)
-    except Exception as e:
-        print(f"Asyncio Loop Error: {e}")
+    except Exception:
         return None
 
 tick_url = "https://base.nutsca.com/api/active-earn/tick"
@@ -163,7 +164,6 @@ def format_uptime(seconds):
     hours, mins = divmod(mins, 60)
     return f"{hours} س و {mins} د" if hours > 0 else f"{mins} د و {sec} ث"
 
-# --- محرك الحساب المستقل ---
 class NutscaWorker:
     def __init__(self, chat_id):
         self.chat_id = chat_id
@@ -413,10 +413,8 @@ class NutscaWorker:
 
             try:
                 resp = self.http_session.post(withdraw_url, headers=withdraw_headers, json=payload, timeout=12)
-                try:
-                    res_data = resp.json()
-                except Exception:
-                    res_data = {}
+                try: res_data = resp.json()
+                except Exception: res_data = {}
 
                 current_status = str(res_data.get("status", "")).upper()
                 self.extract_total_nuts(res_data)
@@ -536,7 +534,7 @@ class NutscaWorker:
 
         while not self.stop_event.is_set():
             try:
-                # تم تغيير مدة التحديث التلقائي إلى 3 ساعات (10800 ثانية) لتفادي حظر الجلسة
+                # تمديد وقت التحديث التلقائي لمنع الحظر
                 if self.session_str and (time.time() - self.last_token_refresh > 10800):
                     if self.refresh_token():
                         self.http_session.close()
@@ -601,11 +599,19 @@ class NutscaWorker:
 
                     time.sleep(interval)
 
+                # تنبيه إذا تم رفض التوكن وإلغاء الحلقة المفرغة
                 elif resp.status_code in [400, 401]:
+                    self.status_text = "⚠️ التوكن غير صالح أو منتهي. جاري التحديث..."
+                    self.update_ui()
                     if self.session_str and self.refresh_token():
                         self.reset_and_reenter()
                         continue
-                    time.sleep(10)
+                    else:
+                        self.token = None
+                        self.is_running = False
+                        self.status_text = "بانتظار ربط الجلسة أو إدخال التوكن..."
+                        self.update_ui()
+                        break
                 else:
                     time.sleep(8)
             except Exception:
@@ -722,7 +728,6 @@ def handle_all_text(message):
 
     w = get_or_create_worker(cid)
 
-    # حفظ المحفظة
     if cid in waiting_wallet:
         waiting_wallet.remove(cid)
         w.wallet = text
@@ -732,27 +737,24 @@ def handle_all_text(message):
         w.update_ui()
         return
 
-    # حفظ التوكن اليدوي مع فك التشفير التلقائي (الإصلاح)
+    # الإصلاح: استلام التوكن اليدوي وحفظه كما هو مشفر!
     if cid in waiting_manual_token or "user=" in text or "hash=" in text:
         if cid in waiting_manual_token: waiting_manual_token.remove(cid)
         raw_text = text
         if "#tgWebAppData=" in raw_text:
             raw_text = raw_text.split("#tgWebAppData=")[1]
-        if "&tgWebAppVersion=" in raw_text:
-            raw_text = raw_text.split("&tgWebAppVersion=")[0]
+        if "&tgWebApp" in raw_text:
+            raw_text = raw_text.split("&tgWebApp")[0]
             
-        clean_token = urllib.parse.unquote(raw_text)
-        w.token = clean_token
-        
+        w.token = raw_text
         with open(get_token_filename(cid), "w", encoding="utf-8") as f:
-            f.write(clean_token)
+            f.write(raw_text)
             
         bot.reply_to(message, "✅ <b>تم تعيين التوكن بنجاح وبدأ العمل!</b>", parse_mode="HTML")
         w.start()
         w.update_ui()
         return
 
-    # استقبال وحفظ الجلسة النصية
     clean_session = "".join(text.split())
     if cid in waiting_session or (clean_session.startswith("1BJ") and len(clean_session) > 100):
         if cid in waiting_session: waiting_session.remove(cid)
