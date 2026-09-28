@@ -6,6 +6,7 @@ import uuid
 import logging
 import asyncio
 import threading
+import urllib.parse
 from flask import Flask
 import requests
 from requests.adapters import HTTPAdapter
@@ -117,14 +118,13 @@ def fetch_token_from_session(session_str):
             raw_url = web_view.url
             await client.disconnect()
             
-            # الإصلاح الجذري: سحب التوكن المشفر كما هو دون فك تشفيره
+            # تم إضافة فك التشفير للسحب التلقائي ليتطابق مع التوكن الصافي
             if "#tgWebAppData=" in raw_url:
                 raw = raw_url.split("#tgWebAppData=")[1]
                 if "&tgWebApp" in raw:
                     raw = raw.split("&tgWebApp")[0]
-                return raw
+                return urllib.parse.unquote(raw)
         except Exception as e:
-            print(f"Fetch Error: {e}")
             try: await client.disconnect()
             except Exception: pass
         return None
@@ -534,7 +534,6 @@ class NutscaWorker:
 
         while not self.stop_event.is_set():
             try:
-                # تمديد وقت التحديث التلقائي لمنع الحظر
                 if self.session_str and (time.time() - self.last_token_refresh > 10800):
                     if self.refresh_token():
                         self.http_session.close()
@@ -599,7 +598,6 @@ class NutscaWorker:
 
                     time.sleep(interval)
 
-                # تنبيه إذا تم رفض التوكن وإلغاء الحلقة المفرغة
                 elif resp.status_code in [400, 401]:
                     self.status_text = "⚠️ التوكن غير صالح أو منتهي. جاري التحديث..."
                     self.update_ui()
@@ -737,14 +735,21 @@ def handle_all_text(message):
         w.update_ui()
         return
 
-    # الإصلاح: استلام التوكن اليدوي وحفظه كما هو مشفر!
+    # التعديل الجديد: فحص التوكن اليدوي للتأكد من احتوائه على التوقيع الكامل
     if cid in waiting_manual_token or "user=" in text or "hash=" in text:
         if cid in waiting_manual_token: waiting_manual_token.remove(cid)
+        
         raw_text = text
         if "#tgWebAppData=" in raw_text:
             raw_text = raw_text.split("#tgWebAppData=")[1]
-        if "&tgWebApp" in raw_text:
-            raw_text = raw_text.split("&tgWebApp")[0]
+            if "&tgWebApp" in raw_text:
+                raw_text = raw_text.split("&tgWebApp")[0]
+            raw_text = urllib.parse.unquote(raw_text)
+            
+        # فحص صارم للتوكن: هل يحتوي على hash؟
+        if "hash=" not in raw_text:
+            bot.reply_to(message, "❌ **التوكن ناقص ومرفوض!**\nلقد قمت بنسخ قسم `user=` فقط. سيرفر اللعبة يتطلب الرابط كاملاً للتحقق من هويتك.\n\nالرجاء العودة إلى HttpCanary ونسخ **الرابط (URL)** كاملاً الذي يحتوي على `hash=` وإرساله هنا.", parse_mode="Markdown")
+            return
             
         w.token = raw_text
         with open(get_token_filename(cid), "w", encoding="utf-8") as f:
